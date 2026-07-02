@@ -19,16 +19,27 @@
 
 ## Codex への委譲方法
 
-フラグは `codex exec --help` で確認済み(2026-07-03 時点)。
+フラグは `codex exec --help` で確認済み(2026-07-03 時点)。実際に動作検証済みの呼び出し方:
 
 ```powershell
-codex exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md "<タスク仕様書>"
+# 1. 仕様書を .codex-task.md に書き出す(gitignore 済み)
+# 2. stdin 経由で渡して実行する
+Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\current\bin\codex.exe exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md -
 ```
 
 - `codex exec` は非対話モード。承認プロンプトは出ない
 - サンドボックスは `-s workspace-write`(リポジトリ内のみ書き込み可)。`danger-full-access` は使わない
 - `-o <FILE>` で Codex の最終報告をファイルに保存し、レビューの参考にする
-- 直前のセッションへの差し戻しは `codex exec resume --last "<修正指示>"`
+- 差し戻しは同じ形式で `resume` を使う(オプションは `exec` の直後、`resume` の前に置く):
+  ```powershell
+  Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\current\bin\codex.exe exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md resume --last -
+  ```
+
+### この環境特有の注意点(2026-07-03 検証)
+
+- **必ず standalone バイナリ `C:\Users\yoshi\.codex\packages\standalone\current\bin\codex.exe` を直接呼ぶこと。** PATH 上のランチャー(`...\Programs\OpenAI\Codex\bin\codex.exe`)経由だと、Windows サンドボックスの補助バイナリ(`codex-windows-sandbox-setup.exe` / `codex-command-runner.exe`)を実行ファイル隣の `codex-resources` から見つけられず、`program not found` や `CreateProcessWithLogonW failed: 2` で全コマンド・全ファイル書き込みが失敗する
+- **仕様書はコマンドライン引数ではなく stdin で渡すこと。** 引数渡しだと仕様書内の二重引用符で引数解釈が壊れる。また PowerShell 5.1 のパイプは日本語が文字化けしてCodexに届くため、仕様書の見出し・ファイルパス・検証値など要点は ASCII でも判読できる形(コードブロックや英語併記)にしておくとより安全
+- Codex のサンドボックスは別ユーザーで実行されるため、Codex からの `git` 操作は `dubious ownership` で失敗する。git 操作は Claude 側で行う(役割分担どおり)
 
 ## タスク仕様書のルール
 

@@ -1,5 +1,9 @@
-# Codex の最終報告(レビュー用の一時ファイル)
+# Codex 委譲用の一時ファイル(タスク仕様書・最終報告)
+.codex-task.md
 .codex-last-message.md
+
+# Codex が作る作業ディレクトリ
+.agents/
 
 # Claude Code のローカル設定
 .claude/settings.local.json

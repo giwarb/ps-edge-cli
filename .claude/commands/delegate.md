@@ -16,9 +16,9 @@ $ARGUMENTS
    - 検証可能な受け入れ条件
    - 制約(PowerShell 5.1 互換、追加依存なし、テストは `tests\*.Tests.ps1` に置く 等)
 
-2. **委譲**: 仕様書を渡して Codex を実行する
+2. **委譲**: 仕様書を `.codex-task.md` に書き出し、stdin 経由で Codex を実行する(CLAUDE.md「この環境特有の注意点」を必ず守ること: standalone バイナリを直接呼ぶ・引数渡しにしない)
    ```powershell
-   codex exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md "<仕様書>"
+   Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\current\bin\codex.exe exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md -
    ```
 
 3. **レビュー**: `git diff` を確認し、`.codex-last-message.md` の報告と突き合わせる
@@ -27,7 +27,10 @@ $ARGUMENTS
 4. **テスト**: `.\tests\run-tests.ps1` を実行する
 
 5. **判定**:
-   - 問題があれば、具体的な修正指示を添えて `codex exec resume --last "<修正指示>"` で差し戻す(最大3回。超えたら自分で修正してよい)
+   - 問題があれば、修正指示を `.codex-task.md` に書いて差し戻す(最大3回。超えたら自分で修正してよい)
+     ```powershell
+     Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\current\bin\codex.exe exec -s workspace-write -C C:\Users\yoshi\work\ps-edge-cli -o .codex-last-message.md resume --last -
+     ```
    - 問題がなければ、論理単位で `git commit` する(コミットメッセージにタスク概要を書く)
 
 6. **報告**: 委譲内容、レビュー結果、テスト結果、コミットハッシュをユーザーに報告する
