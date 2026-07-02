@@ -65,6 +65,9 @@ function Start-PseBrowser {
     )
     if ($Headless) {
         $arguments += '--headless'
+        $arguments += '--disable-gpu'
+        $arguments += '--no-sandbox'
+        $arguments += '--disable-dev-shm-usage'
     }
     $arguments += $Url
 
