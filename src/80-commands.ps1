@@ -300,6 +300,102 @@ function Invoke-PseCmdReload {
     }
 }
 
+function Invoke-PseCmdSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $js = Get-PseSnapshotJs -Selector $selector
+        $snapshot = Invoke-PseInPage -Session $session -JsExpression $js
+        $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
+        if ($null -ne $snapshot -and ([string]$snapshot).StartsWith($noMatchPrefix)) {
+            Write-PseCliError "Error: no element matches selector '$selector'"
+            return 1
+        }
+
+        Write-Output ([string]$snapshot)
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdScreenshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $path = $null
+    if ($Parsed.Positional.Count -ge 1) {
+        $path = [string]$Parsed.Positional[0]
+    } else {
+        $path = 'screenshot-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.png'
+    }
+
+    $absolutePath = [System.IO.Path]::GetFullPath($path)
+    $parent = [System.IO.Path]::GetDirectoryName($absolutePath)
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "screenshot parent directory does not exist: $parent"
+    }
+
+    $fullPage = $false
+    if ($Parsed.Options.ContainsKey('fullpage')) {
+        $fullPage = [bool]$Parsed.Options['fullpage']
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $metrics = Send-PseCdp -Conn $session.Conn -Method 'Page.getLayoutMetrics'
+        $params = @{ format = 'png' }
+        $width = 0
+        $height = 0
+
+        if ($fullPage) {
+            $contentSize = $metrics.cssContentSize
+            if ($null -eq $contentSize) {
+                $contentSize = $metrics.contentSize
+            }
+            $width = [int][Math]::Ceiling([double]$contentSize.width)
+            $height = [int][Math]::Ceiling([double]$contentSize.height)
+            if ($width -lt 1) { $width = 1 }
+            if ($height -lt 1) { $height = 1 }
+            $params.captureBeyondViewport = $true
+            $params.clip = @{
+                x = 0
+                y = 0
+                width = $width
+                height = $height
+                scale = 1
+            }
+        } else {
+            $viewport = $metrics.cssLayoutViewport
+            if ($null -eq $viewport) {
+                $viewport = $metrics.layoutViewport
+            }
+            $width = [int][Math]::Ceiling([double]$viewport.clientWidth)
+            $height = [int][Math]::Ceiling([double]$viewport.clientHeight)
+        }
+
+        $result = Send-PseCdp -Conn $session.Conn -Method 'Page.captureScreenshot' -Params $params -TimeoutSec 30
+        $bytes = [Convert]::FromBase64String([string]$result.data)
+        [System.IO.File]::WriteAllBytes($absolutePath, $bytes)
+
+        Write-Output "Saved screenshot: $absolutePath ($($width)x$($height))"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 function Invoke-PseCmdEval {
     param(
         [Parameter(Mandatory = $true)]

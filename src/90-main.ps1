@@ -56,8 +56,8 @@ Commands:
   back
   forward
   reload [-TimeoutSec 30]
-  snapshot [-Selector <css>] (not implemented yet)
-  screenshot [<path>] [-FullPage] (not implemented yet)
+  snapshot [-Selector <css>]
+  screenshot [<path>] [-FullPage]
   click <ref> [-Right] [-Double] (not implemented yet)
   type <ref> <text> [-Submit] (not implemented yet)
   fill <ref> <value> (not implemented yet)
@@ -82,6 +82,8 @@ function Get-PseCommandMap {
         back = 'Invoke-PseCmdBack'
         forward = 'Invoke-PseCmdForward'
         reload = 'Invoke-PseCmdReload'
+        snapshot = 'Invoke-PseCmdSnapshot'
+        screenshot = 'Invoke-PseCmdScreenshot'
         eval = 'Invoke-PseCmdEval'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'
@@ -95,8 +97,6 @@ function Test-PseNotImplementedCommand {
     )
 
     $notImplemented = @(
-        'snapshot',
-        'screenshot',
         'click',
         'type',
         'fill',
