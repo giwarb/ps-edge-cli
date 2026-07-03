@@ -79,10 +79,12 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | press | `press <key>` | `Input.dispatchKeyEvent`. Keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, plus `Control+A` style combos. |
 | hover | `hover <ref>` | `Input.dispatchMouseEvent` type=mouseMoved at element center. |
 | select | `select <ref> <value> [<value>...]` | JS: set selected options by value or label, dispatch `change`. |
+| upload | `upload <ref> <path> [<path>...]` | Resolve paths locally, verify ref is `input[type=file]`, then use CDP `DOM.setFileInputFiles`. |
 | eval | `eval <javascript>` | `Runtime.evaluate` with `returnByValue:true, awaitPromise:true`; print JSON result. |
 | wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains). |
 | tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | `/json/list`, `/json/new` (PUT), `/json/close/<id>`, `/json/activate/<id>`. `select` updates `targetId` in state. |
 | console | `console` | Reads `window.__pseConsole` (hook injected at start/goto via `Page.addScriptToEvaluateOnNewDocument`). Best effort. |
+| dialog | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Native `alert`/`confirm`/`prompt` are suppressed by an injected hook, recorded in `window.__pseDialogs`, and answered from persisted policy. |
 | cdp | `cdp <method> [<params-json>]` | Raw CDP escape hatch, e.g. `cdp Page.navigate '{"url":"https://example.com"}'`. Prints result JSON. |
 | help | `help [command]` | Usage. Also shown on unknown command (to stderr). |
 

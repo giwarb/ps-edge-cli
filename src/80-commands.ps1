@@ -691,6 +691,42 @@ function Invoke-PseCmdSelect {
     }
 }
 
+function Invoke-PseCmdUpload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'upload requires a ref and at least one path'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $files = New-Object System.Collections.ArrayList
+    foreach ($path in @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ })) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            Write-PseCliError "Error: file not found: $path"
+            return 1
+        }
+        [void]$files.Add([System.IO.Path]::GetFullPath($path))
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        if (-not (Test-PseRefFileInput -Session $session -Ref $ref)) {
+            Write-PseCliError "Error: $ref is not a file input"
+            return 1
+        }
+        Set-PseRefFileInputFiles -Session $session -Ref $ref -Files @($files | ForEach-Object { [string]$_ })
+        Write-Output "Uploaded $($files.Count) file(s) to $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 function Invoke-PseCmdWait {
     param(
         [Parameter(Mandatory = $true)]
@@ -741,6 +777,78 @@ function Invoke-PseCmdWait {
         return 1
     } finally {
         Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdDialog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $accept = $Parsed.Options.ContainsKey('accept')
+    $dismiss = $Parsed.Options.ContainsKey('dismiss')
+    if ($accept -and $dismiss) {
+        Write-PseCliError 'Error: -Accept and -Dismiss cannot be used together'
+        return 1
+    }
+
+    if ($accept -or $dismiss) {
+        $state = Read-PseState
+        if ($null -eq $state -or -not $state.port) {
+            Write-PseCliError "Error: browser is not running - run 'start' first"
+            return 1
+        }
+
+        $newState = ConvertTo-PseStateHashtable -State $state
+        if ($accept) {
+            $newState.dialogMode = 'accept'
+            if ($Parsed.Options.ContainsKey('text')) {
+                $newState.dialogText = [string]$Parsed.Options['text']
+            } else {
+                $newState.dialogText = $null
+            }
+        } else {
+            $newState.dialogMode = 'dismiss'
+            $newState.dialogText = $null
+        }
+        Write-PseState $newState
+
+        $policy = Get-PseDialogPolicy -State ([pscustomobject]$newState)
+        $session = $null
+        try {
+            $session = Get-PseSession
+            Set-PseDialogPolicyInPage -Session $session -Policy $policy
+            Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
+            return 0
+        } finally {
+            Close-PseSession -Session $session
+        }
+    }
+
+    $stateForPolicy = Read-PseState
+    $policyForDisplay = Get-PseDialogPolicy -State $stateForPolicy
+    $sessionForRead = $null
+    try {
+        $sessionForRead = Get-PseSession
+        $js = '(function(){ return JSON.stringify(window.__pseDialogs || []); })()'
+        $json = Invoke-PseInPage -Session $sessionForRead -JsExpression $js
+        $entries = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$json)) {
+            $entries = @($json | ConvertFrom-Json | ForEach-Object { $_ })
+        }
+        Write-Output (Format-PseDialogPolicy -Policy $policyForDisplay)
+        if ($entries.Count -eq 0) {
+            Write-Output 'No dialogs captured.'
+        } else {
+            foreach ($entry in $entries) {
+                Write-Output "[$($entry.type)] $($entry.message) -> $($entry.response)"
+            }
+        }
+        Write-PseLocation -Session $sessionForRead
+        return 0
+    } finally {
+        Close-PseSession -Session $sessionForRead
     }
 }
 

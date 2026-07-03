@@ -14,6 +14,8 @@ function ConvertFrom-PseArgs {
         right = $true
         double = $true
         submit = $true
+        accept = $true
+        dismiss = $true
     }
 
     if ($null -ne $Args -and $Args.Count -eq 1 -and $Args[0] -is [System.Array] -and -not ($Args[0] -is [string])) {
@@ -67,10 +69,12 @@ Commands:
   press <key>
   hover <ref>
   select <ref> <value> [<value>...]
+  upload <ref> <path> [<path>...]
   eval <javascript>
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
+  dialog [-Accept [-Text <reply>] | -Dismiss]
   cdp <method> [<params-json>]
   help
 '@
@@ -94,11 +98,13 @@ function Get-PseCommandMap {
         press = 'Invoke-PseCmdPress'
         hover = 'Invoke-PseCmdHover'
         select = 'Invoke-PseCmdSelect'
+        upload = 'Invoke-PseCmdUpload'
         eval = 'Invoke-PseCmdEval'
         wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'
         console = 'Invoke-PseCmdConsole'
+        dialog = 'Invoke-PseCmdDialog'
     }
 }
 

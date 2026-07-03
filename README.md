@@ -58,10 +58,12 @@ Stopped.
 | `press` | `press <key>` | キーイベントを送ります。例: `Enter`, `Tab`, `Escape`, `Control+A`。 |
 | `hover` | `hover <ref>` | ref 要素の中央へ mouseMoved を送ります。 |
 | `select` | `select <ref> <value> [<value>...]` | select の option を value または label で選択し、`change` を発火します。 |
+| `upload` | `upload <ref> <path> [<path>...]` | Set one or more real local files on an `input[type=file]` ref via CDP. |
 | `eval` | `eval <javascript>` | `Runtime.evaluate` を `returnByValue:true, awaitPromise:true` で実行し、結果を JSON として表示します。 |
 | `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]` | 時間待ち、または body text の出現、消滅をポーリングします。 |
 | `tabs` | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | タブ一覧、新規作成、選択、終了。`select` は状態の `targetId` を更新します。 |
 | `console` | `console` | ページ内で捕捉した console log を表示します。best effort です。 |
+| `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Show or set the auto-response policy for suppressed `alert` / `confirm` / `prompt` dialogs. |
 | `cdp` | `cdp <method> [<params-json>]` | 生の CDP 呼び出しです。例: `cdp Page.navigate '{"url":"https://example.com"}'`。 |
 | `help` | `help` | usage を表示します。不明な command でも stderr に usage を表示します。 |
 

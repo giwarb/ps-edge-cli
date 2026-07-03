@@ -599,20 +599,70 @@ function ConvertTo-PseStateHashtable {
     if ($null -ne $State.PSObject.Properties['downloadDir']) {
         $hash.downloadDir = $State.downloadDir
     }
+    if ($null -ne $State.PSObject.Properties['dialogMode']) {
+        $hash.dialogMode = $State.dialogMode
+    }
+    if ($null -ne $State.PSObject.Properties['dialogText']) {
+        $hash.dialogText = $State.dialogText
+    }
     if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
         $hash.consoleHookTargetIds = @($State.consoleHookTargetIds | ForEach-Object { $_ })
     }
     return $hash
 }
 
-function Get-PseConsoleHookJs {
+function Get-PseDialogPolicy {
+    param(
+        [AllowNull()]
+        $State
+    )
+
+    $mode = 'dismiss'
+    $text = $null
+    if ($null -ne $State) {
+        if ($null -ne $State.PSObject.Properties['dialogMode'] -and $State.dialogMode -eq 'accept') {
+            $mode = 'accept'
+        }
+        if ($null -ne $State.PSObject.Properties['dialogText']) {
+            $text = $State.dialogText
+        }
+    }
+
+    return @{
+        mode = $mode
+        text = $text
+    }
+}
+
+function Format-PseDialogPolicy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy
+    )
+
+    $line = "policy: $($Policy.mode)"
+    if ($null -ne $Policy.text) {
+        $line += " text: $($Policy.text)"
+    }
+    return $line
+}
+
+function Set-PseDialogPolicyInPage {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy
+    )
+
+    $policyJson = ConvertTo-PseJson $Policy
+    [void](Invoke-PseInPage -Session $Session -JsExpression "window.__pseDialogPolicy = $policyJson; true;")
+}
+
+function Get-PsePageHookJs {
     @'
 (function() {
-  if (window.__pseConsoleHookInstalled) {
-    return;
-  }
-  window.__pseConsoleHookInstalled = true;
-  window.__pseConsole = window.__pseConsole || [];
   function stringify(value) {
     try {
       if (typeof value === "string") { return value; }
@@ -624,33 +674,96 @@ function Get-PseConsoleHookJs {
       try { return String(value); } catch (e2) { return "[unprintable]"; }
     }
   }
-  function append(level, args) {
+  if (!window.__pseConsoleHookInstalled) {
+    window.__pseConsoleHookInstalled = true;
+    window.__pseConsole = window.__pseConsole || [];
+    function append(level, args) {
+      try {
+        window.__pseConsole.push({
+          level: level,
+          text: Array.prototype.map.call(args, stringify).join(" "),
+          ts: Date.now()
+        });
+        while (window.__pseConsole.length > 500) {
+          window.__pseConsole.shift();
+        }
+      } catch (e) {
+      }
+    }
+    ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+      var original = console[level];
+      console[level] = function() {
+        append(level, arguments);
+        if (typeof original === "function") {
+          return original.apply(console, arguments);
+        }
+      };
+    });
+    window.addEventListener("error", function(event) {
+      append("error", [event.message || "error"]);
+    });
+  }
+  if (window.__pseDialogHookInstalled) {
+    return;
+  }
+  window.__pseDialogHookInstalled = true;
+  window.__pseDialogs = window.__pseDialogs || [];
+  function getPolicy() {
+    var policy = window.__pseDialogPolicy || {};
+    var mode = policy.mode === "accept" ? "accept" : "dismiss";
+    var text = Object.prototype.hasOwnProperty.call(policy, "text") ? policy.text : null;
+    if (text !== null && text !== undefined) {
+      text = String(text);
+    } else {
+      text = null;
+    }
+    return { mode: mode, text: text };
+  }
+  function responseString(value) {
+    if (value === null) { return "null"; }
+    if (value === undefined) { return ""; }
+    if (value === true) { return "true"; }
+    if (value === false) { return "false"; }
+    return String(value);
+  }
+  function recordDialog(type, message, response) {
     try {
-      window.__pseConsole.push({
-        level: level,
-        text: Array.prototype.map.call(args, stringify).join(" "),
+      window.__pseDialogs.push({
+        type: type,
+        message: String(message),
+        response: responseString(response),
         ts: Date.now()
       });
-      while (window.__pseConsole.length > 500) {
-        window.__pseConsole.shift();
+      while (window.__pseDialogs.length > 100) {
+        window.__pseDialogs.shift();
       }
     } catch (e) {
     }
   }
-  ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-    var original = console[level];
-    console[level] = function() {
-      append(level, arguments);
-      if (typeof original === "function") {
-        return original.apply(console, arguments);
-      }
-    };
-  });
-  window.addEventListener("error", function(event) {
-    append("error", [event.message || "error"]);
-  });
+  window.alert = function(message) {
+    recordDialog("alert", message, undefined);
+    return undefined;
+  };
+  window.confirm = function(message) {
+    var response = getPolicy().mode === "accept";
+    recordDialog("confirm", message, response);
+    return response;
+  };
+  window.prompt = function(message, defaultValue) {
+    var policy = getPolicy();
+    var response = null;
+    if (policy.mode === "accept") {
+      response = policy.text !== null ? policy.text : (defaultValue !== undefined ? defaultValue : "");
+    }
+    recordDialog("prompt", message, response);
+    return response;
+  };
 })();
 '@
+}
+
+function Get-PseConsoleHookJs {
+    Get-PsePageHookJs
 }
 
 function Install-PseConsoleHook {
@@ -667,7 +780,7 @@ function Install-PseConsoleHook {
         $known = @($State.consoleHookTargetIds | ForEach-Object { [string]$_ })
     }
 
-    $script = Get-PseConsoleHookJs
+    $script = Get-PsePageHookJs
     if ($known -notcontains [string]$Session.TargetId) {
         [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
         $newState = ConvertTo-PseStateHashtable -State $State
@@ -683,6 +796,7 @@ function Install-PseConsoleHook {
     }
 
     [void](Invoke-PseInPage -Session $Session -JsExpression $script)
+    Set-PseDialogPolicyInPage -Session $Session -Policy (Get-PseDialogPolicy -State $State)
 }
 
 function Get-PseSession {
@@ -731,6 +845,7 @@ function Get-PseSession {
     try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
         [void](Send-PseCdp -Conn $conn -Method 'Runtime.enable')
+        [void](Send-PseCdp -Conn $conn -Method 'DOM.enable')
     } catch {
         Close-PseCdp -Conn $conn
         throw
@@ -922,6 +1037,7 @@ function Get-PseSnapshotJs {
     if (explicitRole === "link") { return "link"; }
     if (tag === "button") { return "button"; }
     if (tag === "input" && (type === "button" || type === "submit" || type === "reset")) { return "button"; }
+    if (tag === "input" && type === "file") { return "button"; }
     if (tag === "input" && (type === "" || type === "text" || type === "email" || type === "password" || type === "search" || type === "tel" || type === "url" || type === "number")) { return "textbox"; }
     if (tag === "textarea") { return "textbox"; }
     if (tag === "input" && type === "checkbox") { return "checkbox"; }
@@ -1422,6 +1538,56 @@ function Select-PseRefOptions {
 "@
     $json = Invoke-PseInPage -Session $Session -JsExpression $js
     return @($json | ConvertFrom-Json | ForEach-Object { $_ })
+}
+
+function Test-PseRefFileInput {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ref
+    )
+
+    $refJson = ConvertTo-PseJson $Ref
+    $js = @"
+(function() {
+  var ref = $refJson;
+  if (!window.__pseRefs || !window.__pseRefs[ref]) {
+    throw new Error("ref '" + ref + "' not found - run 'snapshot' first (refs are reset by navigation)");
+  }
+  var el = window.__pseRefs[ref];
+  return !!(el && String(el.tagName || "").toLowerCase() === "input" && String(el.type || "").toLowerCase() === "file");
+})()
+"@
+    return [bool](Invoke-PseInPage -Session $Session -JsExpression $js)
+}
+
+function Set-PseRefFileInputFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ref,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Files
+    )
+
+    $refJson = ConvertTo-PseJson $Ref
+    $response = Send-PseCdp -Conn $Session.Conn -Method 'Runtime.evaluate' -Params @{
+        expression = "window.__pseRefs[$refJson]"
+        returnByValue = $false
+    }
+    if ($null -eq $response -or $null -eq $response.result -or -not $response.result.objectId) {
+        throw "ref '$Ref' not found - run 'snapshot' first (refs are reset by navigation)"
+    }
+
+    [void](Send-PseCdp -Conn $Session.Conn -Method 'DOM.setFileInputFiles' -Params @{
+        files = @($Files | ForEach-Object { [string]$_ })
+        objectId = [string]$response.result.objectId
+    })
 }
 
 function Test-PseWaitCondition {
@@ -2160,6 +2326,42 @@ function Invoke-PseCmdSelect {
     }
 }
 
+function Invoke-PseCmdUpload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'upload requires a ref and at least one path'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $files = New-Object System.Collections.ArrayList
+    foreach ($path in @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ })) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            Write-PseCliError "Error: file not found: $path"
+            return 1
+        }
+        [void]$files.Add([System.IO.Path]::GetFullPath($path))
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        if (-not (Test-PseRefFileInput -Session $session -Ref $ref)) {
+            Write-PseCliError "Error: $ref is not a file input"
+            return 1
+        }
+        Set-PseRefFileInputFiles -Session $session -Ref $ref -Files @($files | ForEach-Object { [string]$_ })
+        Write-Output "Uploaded $($files.Count) file(s) to $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 function Invoke-PseCmdWait {
     param(
         [Parameter(Mandatory = $true)]
@@ -2210,6 +2412,78 @@ function Invoke-PseCmdWait {
         return 1
     } finally {
         Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdDialog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $accept = $Parsed.Options.ContainsKey('accept')
+    $dismiss = $Parsed.Options.ContainsKey('dismiss')
+    if ($accept -and $dismiss) {
+        Write-PseCliError 'Error: -Accept and -Dismiss cannot be used together'
+        return 1
+    }
+
+    if ($accept -or $dismiss) {
+        $state = Read-PseState
+        if ($null -eq $state -or -not $state.port) {
+            Write-PseCliError "Error: browser is not running - run 'start' first"
+            return 1
+        }
+
+        $newState = ConvertTo-PseStateHashtable -State $state
+        if ($accept) {
+            $newState.dialogMode = 'accept'
+            if ($Parsed.Options.ContainsKey('text')) {
+                $newState.dialogText = [string]$Parsed.Options['text']
+            } else {
+                $newState.dialogText = $null
+            }
+        } else {
+            $newState.dialogMode = 'dismiss'
+            $newState.dialogText = $null
+        }
+        Write-PseState $newState
+
+        $policy = Get-PseDialogPolicy -State ([pscustomobject]$newState)
+        $session = $null
+        try {
+            $session = Get-PseSession
+            Set-PseDialogPolicyInPage -Session $session -Policy $policy
+            Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
+            return 0
+        } finally {
+            Close-PseSession -Session $session
+        }
+    }
+
+    $stateForPolicy = Read-PseState
+    $policyForDisplay = Get-PseDialogPolicy -State $stateForPolicy
+    $sessionForRead = $null
+    try {
+        $sessionForRead = Get-PseSession
+        $js = '(function(){ return JSON.stringify(window.__pseDialogs || []); })()'
+        $json = Invoke-PseInPage -Session $sessionForRead -JsExpression $js
+        $entries = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$json)) {
+            $entries = @($json | ConvertFrom-Json | ForEach-Object { $_ })
+        }
+        Write-Output (Format-PseDialogPolicy -Policy $policyForDisplay)
+        if ($entries.Count -eq 0) {
+            Write-Output 'No dialogs captured.'
+        } else {
+            foreach ($entry in $entries) {
+                Write-Output "[$($entry.type)] $($entry.message) -> $($entry.response)"
+            }
+        }
+        Write-PseLocation -Session $sessionForRead
+        return 0
+    } finally {
+        Close-PseSession -Session $sessionForRead
     }
 }
 
@@ -2373,6 +2647,8 @@ function ConvertFrom-PseArgs {
         right = $true
         double = $true
         submit = $true
+        accept = $true
+        dismiss = $true
     }
 
     if ($null -ne $Args -and $Args.Count -eq 1 -and $Args[0] -is [System.Array] -and -not ($Args[0] -is [string])) {
@@ -2426,10 +2702,12 @@ Commands:
   press <key>
   hover <ref>
   select <ref> <value> [<value>...]
+  upload <ref> <path> [<path>...]
   eval <javascript>
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
+  dialog [-Accept [-Text <reply>] | -Dismiss]
   cdp <method> [<params-json>]
   help
 '@
@@ -2453,11 +2731,13 @@ function Get-PseCommandMap {
         press = 'Invoke-PseCmdPress'
         hover = 'Invoke-PseCmdHover'
         select = 'Invoke-PseCmdSelect'
+        upload = 'Invoke-PseCmdUpload'
         eval = 'Invoke-PseCmdEval'
         wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'
         console = 'Invoke-PseCmdConsole'
+        dialog = 'Invoke-PseCmdDialog'
     }
 }
 

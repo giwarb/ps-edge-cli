@@ -344,6 +344,56 @@ function Select-PseRefOptions {
     return @($json | ConvertFrom-Json | ForEach-Object { $_ })
 }
 
+function Test-PseRefFileInput {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ref
+    )
+
+    $refJson = ConvertTo-PseJson $Ref
+    $js = @"
+(function() {
+  var ref = $refJson;
+  if (!window.__pseRefs || !window.__pseRefs[ref]) {
+    throw new Error("ref '" + ref + "' not found - run 'snapshot' first (refs are reset by navigation)");
+  }
+  var el = window.__pseRefs[ref];
+  return !!(el && String(el.tagName || "").toLowerCase() === "input" && String(el.type || "").toLowerCase() === "file");
+})()
+"@
+    return [bool](Invoke-PseInPage -Session $Session -JsExpression $js)
+}
+
+function Set-PseRefFileInputFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ref,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Files
+    )
+
+    $refJson = ConvertTo-PseJson $Ref
+    $response = Send-PseCdp -Conn $Session.Conn -Method 'Runtime.evaluate' -Params @{
+        expression = "window.__pseRefs[$refJson]"
+        returnByValue = $false
+    }
+    if ($null -eq $response -or $null -eq $response.result -or -not $response.result.objectId) {
+        throw "ref '$Ref' not found - run 'snapshot' first (refs are reset by navigation)"
+    }
+
+    [void](Send-PseCdp -Conn $Session.Conn -Method 'DOM.setFileInputFiles' -Params @{
+        files = @($Files | ForEach-Object { [string]$_ })
+        objectId = [string]$response.result.objectId
+    })
+}
+
 function Test-PseWaitCondition {
     param(
         [Parameter(Mandatory = $true)]

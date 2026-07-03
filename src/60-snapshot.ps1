@@ -111,6 +111,7 @@ function Get-PseSnapshotJs {
     if (explicitRole === "link") { return "link"; }
     if (tag === "button") { return "button"; }
     if (tag === "input" && (type === "button" || type === "submit" || type === "reset")) { return "button"; }
+    if (tag === "input" && type === "file") { return "button"; }
     if (tag === "input" && (type === "" || type === "text" || type === "email" || type === "password" || type === "search" || type === "tel" || type === "url" || type === "number")) { return "textbox"; }
     if (tag === "textarea") { return "textbox"; }
     if (tag === "input" && type === "checkbox") { return "checkbox"; }

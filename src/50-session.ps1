@@ -16,20 +16,70 @@ function ConvertTo-PseStateHashtable {
     if ($null -ne $State.PSObject.Properties['downloadDir']) {
         $hash.downloadDir = $State.downloadDir
     }
+    if ($null -ne $State.PSObject.Properties['dialogMode']) {
+        $hash.dialogMode = $State.dialogMode
+    }
+    if ($null -ne $State.PSObject.Properties['dialogText']) {
+        $hash.dialogText = $State.dialogText
+    }
     if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
         $hash.consoleHookTargetIds = @($State.consoleHookTargetIds | ForEach-Object { $_ })
     }
     return $hash
 }
 
-function Get-PseConsoleHookJs {
+function Get-PseDialogPolicy {
+    param(
+        [AllowNull()]
+        $State
+    )
+
+    $mode = 'dismiss'
+    $text = $null
+    if ($null -ne $State) {
+        if ($null -ne $State.PSObject.Properties['dialogMode'] -and $State.dialogMode -eq 'accept') {
+            $mode = 'accept'
+        }
+        if ($null -ne $State.PSObject.Properties['dialogText']) {
+            $text = $State.dialogText
+        }
+    }
+
+    return @{
+        mode = $mode
+        text = $text
+    }
+}
+
+function Format-PseDialogPolicy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy
+    )
+
+    $line = "policy: $($Policy.mode)"
+    if ($null -ne $Policy.text) {
+        $line += " text: $($Policy.text)"
+    }
+    return $line
+}
+
+function Set-PseDialogPolicyInPage {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy
+    )
+
+    $policyJson = ConvertTo-PseJson $Policy
+    [void](Invoke-PseInPage -Session $Session -JsExpression "window.__pseDialogPolicy = $policyJson; true;")
+}
+
+function Get-PsePageHookJs {
     @'
 (function() {
-  if (window.__pseConsoleHookInstalled) {
-    return;
-  }
-  window.__pseConsoleHookInstalled = true;
-  window.__pseConsole = window.__pseConsole || [];
   function stringify(value) {
     try {
       if (typeof value === "string") { return value; }
@@ -41,33 +91,96 @@ function Get-PseConsoleHookJs {
       try { return String(value); } catch (e2) { return "[unprintable]"; }
     }
   }
-  function append(level, args) {
+  if (!window.__pseConsoleHookInstalled) {
+    window.__pseConsoleHookInstalled = true;
+    window.__pseConsole = window.__pseConsole || [];
+    function append(level, args) {
+      try {
+        window.__pseConsole.push({
+          level: level,
+          text: Array.prototype.map.call(args, stringify).join(" "),
+          ts: Date.now()
+        });
+        while (window.__pseConsole.length > 500) {
+          window.__pseConsole.shift();
+        }
+      } catch (e) {
+      }
+    }
+    ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+      var original = console[level];
+      console[level] = function() {
+        append(level, arguments);
+        if (typeof original === "function") {
+          return original.apply(console, arguments);
+        }
+      };
+    });
+    window.addEventListener("error", function(event) {
+      append("error", [event.message || "error"]);
+    });
+  }
+  if (window.__pseDialogHookInstalled) {
+    return;
+  }
+  window.__pseDialogHookInstalled = true;
+  window.__pseDialogs = window.__pseDialogs || [];
+  function getPolicy() {
+    var policy = window.__pseDialogPolicy || {};
+    var mode = policy.mode === "accept" ? "accept" : "dismiss";
+    var text = Object.prototype.hasOwnProperty.call(policy, "text") ? policy.text : null;
+    if (text !== null && text !== undefined) {
+      text = String(text);
+    } else {
+      text = null;
+    }
+    return { mode: mode, text: text };
+  }
+  function responseString(value) {
+    if (value === null) { return "null"; }
+    if (value === undefined) { return ""; }
+    if (value === true) { return "true"; }
+    if (value === false) { return "false"; }
+    return String(value);
+  }
+  function recordDialog(type, message, response) {
     try {
-      window.__pseConsole.push({
-        level: level,
-        text: Array.prototype.map.call(args, stringify).join(" "),
+      window.__pseDialogs.push({
+        type: type,
+        message: String(message),
+        response: responseString(response),
         ts: Date.now()
       });
-      while (window.__pseConsole.length > 500) {
-        window.__pseConsole.shift();
+      while (window.__pseDialogs.length > 100) {
+        window.__pseDialogs.shift();
       }
     } catch (e) {
     }
   }
-  ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-    var original = console[level];
-    console[level] = function() {
-      append(level, arguments);
-      if (typeof original === "function") {
-        return original.apply(console, arguments);
-      }
-    };
-  });
-  window.addEventListener("error", function(event) {
-    append("error", [event.message || "error"]);
-  });
+  window.alert = function(message) {
+    recordDialog("alert", message, undefined);
+    return undefined;
+  };
+  window.confirm = function(message) {
+    var response = getPolicy().mode === "accept";
+    recordDialog("confirm", message, response);
+    return response;
+  };
+  window.prompt = function(message, defaultValue) {
+    var policy = getPolicy();
+    var response = null;
+    if (policy.mode === "accept") {
+      response = policy.text !== null ? policy.text : (defaultValue !== undefined ? defaultValue : "");
+    }
+    recordDialog("prompt", message, response);
+    return response;
+  };
 })();
 '@
+}
+
+function Get-PseConsoleHookJs {
+    Get-PsePageHookJs
 }
 
 function Install-PseConsoleHook {
@@ -84,7 +197,7 @@ function Install-PseConsoleHook {
         $known = @($State.consoleHookTargetIds | ForEach-Object { [string]$_ })
     }
 
-    $script = Get-PseConsoleHookJs
+    $script = Get-PsePageHookJs
     if ($known -notcontains [string]$Session.TargetId) {
         [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
         $newState = ConvertTo-PseStateHashtable -State $State
@@ -100,6 +213,7 @@ function Install-PseConsoleHook {
     }
 
     [void](Invoke-PseInPage -Session $Session -JsExpression $script)
+    Set-PseDialogPolicyInPage -Session $Session -Policy (Get-PseDialogPolicy -State $State)
 }
 
 function Get-PseSession {
@@ -148,6 +262,7 @@ function Get-PseSession {
     try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
         [void](Send-PseCdp -Conn $conn -Method 'Runtime.enable')
+        [void](Send-PseCdp -Conn $conn -Method 'DOM.enable')
     } catch {
         Close-PseCdp -Conn $conn
         throw

@@ -47,10 +47,12 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Keyboard | `press Enter` / `press Tab` / `press Control+A` / `press Delete` ... |
 | Hover | `hover <ref>` |
 | Dropdown | `select <ref> <value> [<value>...]` (matches option value or label) |
+| Upload files | `upload <ref> <path> [<path>...]` |
 | Run JavaScript | `eval <expression>` (returnByValue, promises awaited) |
 | Wait | `wait -Text <str>` / `wait -Gone <str>` / `wait -Time <sec>` (`-TimeoutSec 30`) |
 | Tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` |
 | Console logs | `console` (captured best-effort after the session hook is installed) |
+| JS dialogs | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` |
 | Raw CDP escape hatch | `cdp <method> [<params-json>]` e.g. `cdp Page.navigate '{"url":"https://example.com"}'` |
 | Usage | `help` |
 
@@ -105,6 +107,11 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
   detaches and leaves that browser running.
 - For report downloads, use `start -DownloadDir <path>` or the default state download
   directory, then run `downloads` to list completed and in-progress files.
+- Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
+  `snapshot` shows the file input ref.
+- Dialogs are auto-dismissed by default. Set `dialog -Accept` before clicking a
+  delete button when confirmation is required, then run `dialog` to see what was
+  suppressed.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 
