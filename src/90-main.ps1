@@ -9,6 +9,7 @@ function ConvertFrom-PseArgs {
     $options = @{}
     $flags = @{
         headless = $true
+        attach = $true
         fullpage = $true
         right = $true
         double = $true
@@ -49,9 +50,11 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]
+  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start -Attach [-Port 9222]
   stop
   status
+  downloads [-Dir <path>]
   goto <url> [-TimeoutSec 30]
   back
   forward
@@ -78,6 +81,7 @@ function Get-PseCommandMap {
         start = 'Invoke-PseCmdStart'
         stop = 'Invoke-PseCmdStop'
         status = 'Invoke-PseCmdStatus'
+        downloads = 'Invoke-PseCmdDownloads'
         goto = 'Invoke-PseCmdGoto'
         back = 'Invoke-PseCmdBack'
         forward = 'Invoke-PseCmdForward'

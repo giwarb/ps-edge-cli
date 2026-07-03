@@ -391,7 +391,9 @@ function Start-PseBrowser {
 
         [string]$Url = 'about:blank',
 
-        [string]$UserDataDir
+        [string]$UserDataDir,
+
+        [string]$DownloadDir
     )
 
     try {
@@ -408,6 +410,14 @@ function Start-PseBrowser {
     }
     if (-not (Test-Path -LiteralPath $UserDataDir)) {
         New-Item -ItemType Directory -Path $UserDataDir | Out-Null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
+        $DownloadDir = Join-Path (Get-PseStateDir) "downloads-$Port"
+    }
+    $DownloadDir = [System.IO.Path]::GetFullPath($DownloadDir)
+    if (-not (Test-Path -LiteralPath $DownloadDir)) {
+        New-Item -ItemType Directory -Path $DownloadDir | Out-Null
     }
 
     $edgePath = Get-PseEdgePath
@@ -455,14 +465,83 @@ function Start-PseBrowser {
         pid = $process.Id
         userDataDir = $UserDataDir
         targetId = $null
+        attached = $false
+        downloadDir = $DownloadDir
+    }
+
+    $downloadWarning = $false
+    try {
+        Set-PseDownloadBehavior -Version $version -DownloadDir $DownloadDir
+    } catch {
+        $downloadWarning = $true
+    }
+    Add-Member -InputObject $version -MemberType NoteProperty -Name pseDownloadWarning -Value $downloadWarning -Force
+
+    return $version
+}
+
+function Attach-PseBrowser {
+    param(
+        [int]$Port = 9222
+    )
+
+    try {
+        $version = Invoke-PseHttpJson -Port $Port -Path '/json/version'
+    } catch {
+        throw "no CDP endpoint on port $Port - launch Edge first: msedge.exe --remote-debugging-port=$Port"
+    }
+
+    if ($null -eq $version) {
+        throw "no CDP endpoint on port $Port - launch Edge first: msedge.exe --remote-debugging-port=$Port"
+    }
+
+    Write-PseState @{
+        port = $Port
+        pid = $null
+        userDataDir = $null
+        targetId = $null
+        attached = $true
+        downloadDir = $null
     }
 
     return $version
 }
 
+function Set-PseDownloadBehavior {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DownloadDir
+    )
+
+    if ($null -eq $Version -or -not $Version.webSocketDebuggerUrl) {
+        throw 'browser WebSocket URL was not available'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $Version.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Browser.setDownloadBehavior' -Params @{
+            behavior = 'allow'
+            downloadPath = $DownloadDir
+        } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
 function Stop-PseBrowser {
     $state = Read-PseState
     if ($null -eq $state) {
+        return
+    }
+
+    if ($null -ne $state.PSObject.Properties['attached'] -and $state.attached) {
+        Clear-PseState
         return
     }
 
@@ -513,6 +592,12 @@ function ConvertTo-PseStateHashtable {
         pid = $State.pid
         userDataDir = $State.userDataDir
         targetId = $State.targetId
+    }
+    if ($null -ne $State.PSObject.Properties['attached']) {
+        $hash.attached = $State.attached
+    }
+    if ($null -ne $State.PSObject.Properties['downloadDir']) {
+        $hash.downloadDir = $State.downloadDir
     }
     if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
         $hash.consoleHookTargetIds = @($State.consoleHookTargetIds | ForEach-Object { $_ })
@@ -1548,13 +1633,42 @@ function Invoke-PseCmdStart {
     $port = [int](Get-PseOptionValue -Parsed $Parsed -Name 'port' -Default 9222)
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
+    $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
     $headless = $false
     if ($Parsed.Options.ContainsKey('headless')) {
         $headless = [bool]$Parsed.Options['headless']
     }
+    $attach = $false
+    if ($Parsed.Options.ContainsKey('attach')) {
+        $attach = [bool]$Parsed.Options['attach']
+    }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir
+    if ($attach) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir')) {
+            Write-PseCliError 'Error: -Attach does not launch a browser'
+            return 1
+        }
+
+        try {
+            $version = Attach-PseBrowser -Port $port
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
+        $state = Read-PseState
+        Write-Output "Attached to Edge $($version.Browser) on port $port"
+        $targets = @(Get-PseTargets -Port $port)
+        for ($i = 0; $i -lt $targets.Count; $i++) {
+            Write-Output (Format-PseTabLine -Index ($i + 1) -Target $targets[$i] -CurrentTargetId $state.targetId)
+        }
+        return 0
+    }
+
+    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
     $state = Read-PseState
+    if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
+        Write-Output '# warning: could not set download dir'
+    }
     Write-Output "Started Edge $($version.Browser) (pid $($state.pid)) on port $port"
     $targets = @(Get-PseTargets -Port $port)
     for ($i = 0; $i -lt $targets.Count; $i++) {
@@ -1571,8 +1685,13 @@ function Invoke-PseCmdStop {
         return 0
     }
 
+    $attached = ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached)
     Stop-PseBrowser
-    Write-Output 'Stopped.'
+    if ($attached) {
+        Write-Output 'Detached (browser left running).'
+    } else {
+        Write-Output 'Stopped.'
+    }
     return 0
 }
 
@@ -1586,10 +1705,54 @@ function Invoke-PseCmdStatus {
     $version = Invoke-PseHttpJson -Port ([int]$info.State.port) -Path '/json/version'
     Write-Output "port: $($info.State.port)"
     Write-Output "pid: $($info.State.pid)"
+    if ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached) {
+        Write-Output 'attached: true'
+    }
     Write-Output "browser: $($version.Browser)"
     for ($i = 0; $i -lt $info.Targets.Count; $i++) {
         Write-Output (Format-PseTabLine -Index ($i + 1) -Target $info.Targets[$i] -CurrentTargetId $info.State.targetId)
     }
+    return 0
+}
+
+function Invoke-PseCmdDownloads {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $dir = Get-PseOptionValue -Parsed $Parsed -Name 'dir' -Default $null
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        $state = Read-PseState
+        if ($null -ne $state -and $null -ne $state.PSObject.Properties['downloadDir']) {
+            $dir = $state.downloadDir
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        Write-PseCliError 'Error: no download directory configured (start without -Attach, or pass -Dir)'
+        return 1
+    }
+
+    $absoluteDir = [System.IO.Path]::GetFullPath([string]$dir)
+    if (-not (Test-Path -LiteralPath $absoluteDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $absoluteDir | Out-Null
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $absoluteDir -File | Sort-Object LastWriteTime -Descending)
+    if ($files.Count -eq 0) {
+        Write-Output 'No downloads yet.'
+    } else {
+        foreach ($file in $files) {
+            $suffix = ''
+            if ($file.Name.EndsWith('.crdownload', [System.StringComparison]::OrdinalIgnoreCase) -or $file.Name.EndsWith('.partial', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $suffix = '  [in progress]'
+            }
+            Write-Output ("{0}  {1}  {2}{3}" -f $file.Length, $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $file.Name, $suffix)
+        }
+    }
+
+    Write-Output "# dir: $absoluteDir"
     return 0
 }
 
@@ -2205,6 +2368,7 @@ function ConvertFrom-PseArgs {
     $options = @{}
     $flags = @{
         headless = $true
+        attach = $true
         fullpage = $true
         right = $true
         double = $true
@@ -2245,9 +2409,11 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]
+  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start -Attach [-Port 9222]
   stop
   status
+  downloads [-Dir <path>]
   goto <url> [-TimeoutSec 30]
   back
   forward
@@ -2274,6 +2440,7 @@ function Get-PseCommandMap {
         start = 'Invoke-PseCmdStart'
         stop = 'Invoke-PseCmdStop'
         status = 'Invoke-PseCmdStatus'
+        downloads = 'Invoke-PseCmdDownloads'
         goto = 'Invoke-PseCmdGoto'
         back = 'Invoke-PseCmdBack'
         forward = 'Invoke-PseCmdForward'

@@ -43,9 +43,10 @@ Stopped.
 
 | Command | Syntax | Notes |
 |---|---|---|
-| `start` | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]` | Edge を remote debugging port 付きで起動し、状態を保存します。 |
+| `start` | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Edge を remote debugging port 付きで起動し、状態を保存します。`-Attach` は既存の CDP endpoint に接続します。 |
 | `stop` | `stop` | CDP の `Browser.close` を試し、必要なら PID を停止し、状態を消します。 |
 | `status` | `status` | port、pid、version、tabs を表示します。未起動なら `Not running.` を表示します。 |
+| `downloads` | `downloads [-Dir <path>]` | 設定済み、または指定した download dir のファイルを新しい順に表示します。 |
 | `goto` | `goto <url>` | ページへ移動して load を待ちます。裸のドメインは `https://` として扱います。 |
 | `back` / `forward` | `back` / `forward` | ブラウザ履歴を戻る、進む。 |
 | `reload` | `reload` | 現在ページを再読み込みして load を待ちます。 |

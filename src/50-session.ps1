@@ -10,6 +10,12 @@ function ConvertTo-PseStateHashtable {
         userDataDir = $State.userDataDir
         targetId = $State.targetId
     }
+    if ($null -ne $State.PSObject.Properties['attached']) {
+        $hash.attached = $State.attached
+    }
+    if ($null -ne $State.PSObject.Properties['downloadDir']) {
+        $hash.downloadDir = $State.downloadDir
+    }
     if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
         $hash.consoleHookTargetIds = @($State.consoleHookTargetIds | ForEach-Object { $_ })
     }

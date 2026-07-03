@@ -35,8 +35,9 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 | Goal | Command |
 |---|---|
-| Launch browser | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]` |
+| Launch browser | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
 | Shut down | `stop` — Check liveness: `status` |
+| Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
 | Read page (primary tool) | `snapshot [-Selector <css>]` |
 | Pixels | `screenshot [<path>] [-FullPage]` |
@@ -99,6 +100,11 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
   ports share that single state file — avoid concurrent sessions.
 - `start` without `-Headless` opens a visible window — useful when a human wants to
   watch or take over.
+- To use a logged-in real profile, manually launch Edge first with
+  `msedge.exe --remote-debugging-port=9222`, then run `start -Attach`; `stop` only
+  detaches and leaves that browser running.
+- For report downloads, use `start -DownloadDir <path>` or the default state download
+  directory, then run `downloads` to list completed and in-progress files.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 

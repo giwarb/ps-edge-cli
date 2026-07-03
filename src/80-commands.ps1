@@ -164,13 +164,42 @@ function Invoke-PseCmdStart {
     $port = [int](Get-PseOptionValue -Parsed $Parsed -Name 'port' -Default 9222)
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
+    $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
     $headless = $false
     if ($Parsed.Options.ContainsKey('headless')) {
         $headless = [bool]$Parsed.Options['headless']
     }
+    $attach = $false
+    if ($Parsed.Options.ContainsKey('attach')) {
+        $attach = [bool]$Parsed.Options['attach']
+    }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir
+    if ($attach) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir')) {
+            Write-PseCliError 'Error: -Attach does not launch a browser'
+            return 1
+        }
+
+        try {
+            $version = Attach-PseBrowser -Port $port
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
+        $state = Read-PseState
+        Write-Output "Attached to Edge $($version.Browser) on port $port"
+        $targets = @(Get-PseTargets -Port $port)
+        for ($i = 0; $i -lt $targets.Count; $i++) {
+            Write-Output (Format-PseTabLine -Index ($i + 1) -Target $targets[$i] -CurrentTargetId $state.targetId)
+        }
+        return 0
+    }
+
+    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
     $state = Read-PseState
+    if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
+        Write-Output '# warning: could not set download dir'
+    }
     Write-Output "Started Edge $($version.Browser) (pid $($state.pid)) on port $port"
     $targets = @(Get-PseTargets -Port $port)
     for ($i = 0; $i -lt $targets.Count; $i++) {
@@ -187,8 +216,13 @@ function Invoke-PseCmdStop {
         return 0
     }
 
+    $attached = ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached)
     Stop-PseBrowser
-    Write-Output 'Stopped.'
+    if ($attached) {
+        Write-Output 'Detached (browser left running).'
+    } else {
+        Write-Output 'Stopped.'
+    }
     return 0
 }
 
@@ -202,10 +236,54 @@ function Invoke-PseCmdStatus {
     $version = Invoke-PseHttpJson -Port ([int]$info.State.port) -Path '/json/version'
     Write-Output "port: $($info.State.port)"
     Write-Output "pid: $($info.State.pid)"
+    if ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached) {
+        Write-Output 'attached: true'
+    }
     Write-Output "browser: $($version.Browser)"
     for ($i = 0; $i -lt $info.Targets.Count; $i++) {
         Write-Output (Format-PseTabLine -Index ($i + 1) -Target $info.Targets[$i] -CurrentTargetId $info.State.targetId)
     }
+    return 0
+}
+
+function Invoke-PseCmdDownloads {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $dir = Get-PseOptionValue -Parsed $Parsed -Name 'dir' -Default $null
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        $state = Read-PseState
+        if ($null -ne $state -and $null -ne $state.PSObject.Properties['downloadDir']) {
+            $dir = $state.downloadDir
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        Write-PseCliError 'Error: no download directory configured (start without -Attach, or pass -Dir)'
+        return 1
+    }
+
+    $absoluteDir = [System.IO.Path]::GetFullPath([string]$dir)
+    if (-not (Test-Path -LiteralPath $absoluteDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $absoluteDir | Out-Null
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $absoluteDir -File | Sort-Object LastWriteTime -Descending)
+    if ($files.Count -eq 0) {
+        Write-Output 'No downloads yet.'
+    } else {
+        foreach ($file in $files) {
+            $suffix = ''
+            if ($file.Name.EndsWith('.crdownload', [System.StringComparison]::OrdinalIgnoreCase) -or $file.Name.EndsWith('.partial', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $suffix = '  [in progress]'
+            }
+            Write-Output ("{0}  {1}  {2}{3}" -f $file.Length, $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $file.Name, $suffix)
+        }
+    }
+
+    Write-Output "# dir: $absoluteDir"
     return 0
 }
 
