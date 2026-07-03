@@ -68,7 +68,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 
 | Command | Syntax | Implementation notes |
 |---|---|---|
-| start | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
+| start | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. Quiet flags are enabled by default; `-NoQuietFlags` restores the minimal launch flags, and repeated `-ExtraArg <arg>` passes raw Chromium switches. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
 | stop | `stop` | `Browser.close` via CDP, fallback kill PID, clear state. |
 | status | `status` | Show port/pid/version/tabs, or "not running". |
 | downloads | `downloads [-Dir <path>]` | List files in the configured download directory (or explicit `-Dir`), newest first, marking partial downloads. |

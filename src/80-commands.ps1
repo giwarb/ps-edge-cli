@@ -215,9 +215,17 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $extraArg = @()
+    if ($Parsed.Options.ContainsKey('extraarg')) {
+        $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
+    }
     $headless = $false
     if ($Parsed.Options.ContainsKey('headless')) {
         $headless = [bool]$Parsed.Options['headless']
+    }
+    $noQuietFlags = $false
+    if ($Parsed.Options.ContainsKey('noquietflags')) {
+        $noQuietFlags = [bool]$Parsed.Options['noquietflags']
     }
     $attach = $false
     if ($Parsed.Options.ContainsKey('attach')) {
@@ -225,7 +233,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -245,7 +253,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'

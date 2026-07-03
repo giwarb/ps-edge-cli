@@ -35,7 +35,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 | Goal | Command |
 |---|---|
-| Launch browser | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
+| Launch browser | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
 | Shut down | `stop` — Check liveness: `status` |
 | Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
@@ -106,6 +106,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
   ports share that single state file — avoid concurrent sessions.
 - `start` without `-Headless` opens a visible window — useful when a human wants to
   watch or take over.
+- Quiet launch flags are on by default: no sync/sign-in prompts, no extension
+  dialogs, and extensions are disabled. Use `-NoQuietFlags` when you need
+  extensions or Edge's stock behavior; use repeated `-ExtraArg <arg>` to pass raw
+  Chromium switches.
 - To use a logged-in real profile, manually launch Edge first with
   `msedge.exe --remote-debugging-port=9222`, then run `start -Attach`; `stop` only
   detaches and leaves that browser running.

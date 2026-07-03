@@ -383,11 +383,80 @@ function Get-PseEdgePath {
     throw 'msedge.exe was not found.'
 }
 
+function Get-PseEdgeLaunchArguments {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$UserDataDir,
+        [switch]$Headless,
+        [switch]$NoQuietFlags,
+        [string[]]$ExtraArg,
+        [string]$Url = 'about:blank'
+    )
+
+    $arguments = @(
+        "--remote-debugging-port=$Port",
+        "--user-data-dir=$UserDataDir",
+        '--no-first-run',
+        '--no-default-browser-check'
+    )
+
+    if (-not $NoQuietFlags) {
+        $arguments += '--disable-field-trial-config'
+        $arguments += '--disable-background-networking'
+        $arguments += '--disable-background-timer-throttling'
+        $arguments += '--disable-backgrounding-occluded-windows'
+        $arguments += '--disable-back-forward-cache'
+        $arguments += '--disable-breakpad'
+        $arguments += '--disable-client-side-phishing-detection'
+        $arguments += '--disable-component-extensions-with-background-pages'
+        $arguments += '--disable-component-update'
+        $arguments += '--disable-default-apps'
+        $arguments += '--disable-extensions'
+        $arguments += '--disable-hang-monitor'
+        $arguments += '--disable-infobars'
+        $arguments += '--disable-ipc-flooding-protection'
+        $arguments += '--disable-popup-blocking'
+        $arguments += '--disable-prompt-on-repost'
+        $arguments += '--disable-renderer-backgrounding'
+        $arguments += '--disable-search-engine-choice-screen'
+        $arguments += '--disable-sync'
+        $arguments += '--edge-skip-compat-layer-relaunch'
+        $arguments += '--force-color-profile=srgb'
+        $arguments += '--metrics-recording-only'
+        $arguments += '--no-service-autorun'
+        $arguments += '--password-store=basic'
+        $arguments += '--use-mock-keychain'
+        $arguments += '--export-tagged-pdf'
+        $arguments += '--allow-pre-commit-input'
+        $arguments += '--disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn'
+    }
+
+    if ($Headless) {
+        $arguments += '--headless'
+        $arguments += '--disable-gpu'
+        $arguments += '--no-sandbox'
+        $arguments += '--disable-dev-shm-usage'
+    }
+
+    if ($null -ne $ExtraArg) {
+        foreach ($arg in $ExtraArg) {
+            $arguments += $arg
+        }
+    }
+
+    $arguments += $Url
+    return $arguments
+}
+
 function Start-PseBrowser {
     param(
         [int]$Port = 9222,
 
         [switch]$Headless,
+
+        [switch]$NoQuietFlags,
+
+        [string[]]$ExtraArg,
 
         [string]$Url = 'about:blank',
 
@@ -421,19 +490,7 @@ function Start-PseBrowser {
     }
 
     $edgePath = Get-PseEdgePath
-    $arguments = @(
-        "--remote-debugging-port=$Port",
-        "--user-data-dir=$UserDataDir",
-        '--no-first-run',
-        '--no-default-browser-check'
-    )
-    if ($Headless) {
-        $arguments += '--headless'
-        $arguments += '--disable-gpu'
-        $arguments += '--no-sandbox'
-        $arguments += '--disable-dev-shm-usage'
-    }
-    $arguments += $Url
+    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $Url
 
     $process = Start-Process -FilePath $edgePath -ArgumentList $arguments -PassThru
     $version = $null
@@ -1894,9 +1951,17 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $extraArg = @()
+    if ($Parsed.Options.ContainsKey('extraarg')) {
+        $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
+    }
     $headless = $false
     if ($Parsed.Options.ContainsKey('headless')) {
         $headless = [bool]$Parsed.Options['headless']
+    }
+    $noQuietFlags = $false
+    if ($Parsed.Options.ContainsKey('noquietflags')) {
+        $noQuietFlags = [bool]$Parsed.Options['noquietflags']
     }
     $attach = $false
     if ($Parsed.Options.ContainsKey('attach')) {
@@ -1904,7 +1969,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -1924,7 +1989,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'
@@ -2825,6 +2890,7 @@ function ConvertFrom-PseArgs {
         submit = $true
         accept = $true
         dismiss = $true
+        noquietflags = $true
     }
 
     if ($null -ne $Args -and $Args.Count -eq 1 -and $Args[0] -is [System.Array] -and -not ($Args[0] -is [string])) {
@@ -2836,7 +2902,21 @@ function ConvertFrom-PseArgs {
         $token = [string]$Args[$i]
         if ($token -match '^--?(.+)$') {
             $name = $Matches[1].ToLowerInvariant()
-            if ($flags.ContainsKey($name)) {
+            if ($name -eq 'extraarg') {
+                $values = $null
+                if ($options.ContainsKey($name)) {
+                    $values = $options[$name]
+                } else {
+                    $values = New-Object System.Collections.ArrayList
+                    $options[$name] = $values
+                }
+                if (($i + 1) -lt $Args.Count) {
+                    [void]$values.Add([string]$Args[$i + 1])
+                    $i++
+                } else {
+                    [void]$values.Add('')
+                }
+            } elseif ($flags.ContainsKey($name)) {
                 $options[$name] = $true
             } elseif (($i + 1) -lt $Args.Count -and ([string]$Args[$i + 1]) -notmatch '^-') {
                 $options[$name] = [string]$Args[$i + 1]
@@ -2861,7 +2941,7 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
   start -Attach [-Port 9222]
   stop
   status
