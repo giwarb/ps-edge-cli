@@ -66,6 +66,8 @@ Stopped.
 
 ## For AI Agents
 
+Claude Code などのエージェントには、スキル [.claude/skills/ps-edge/SKILL.md](.claude/skills/ps-edge/SKILL.md) を読み込ませてください(このリポジトリ内ではプロジェクトスキルとして自動で利用可能です)。スキルには操作ループ、コマンドチートシート、エラー対応表が含まれており、**このスクリプト+スキルだけ**でブラウザ操作を自走できます。他マシンへは `dist/ps-edge.ps1` と `.claude/skills/ps-edge/` をコピーしてください。
+
 推奨ループ:
 
 1. `snapshot` で現在のページ構造と ref を取得する。
@@ -87,8 +89,15 @@ dist/ps-edge.ps1    committed single-file bundle
 tests/*.Tests.ps1   plain PowerShell tests
 tests/run-tests.ps1 test runner
 docs/DESIGN.md      architecture and command syntax source of truth
+docs/ROADMAP.md     prioritized feature gaps for future PRs
+.claude/skills/ps-edge/SKILL.md  agent-facing skill (part of the product)
 CLAUDE.md           Claude/Codex collaboration workflow
 ```
+
+**ドキュメント同期ルール**: CLI のコマンド追加・削除・出力形式変更を行う PR では、
+`.claude/skills/ps-edge/SKILL.md`(スキル)、`README.md` のコマンドリファレンス、
+`docs/DESIGN.md` を**同じ PR 内で必ず更新**してください。スキルが古いままだと、
+それを読むすべてのエージェントを誤誘導します。
 
 テスト:
 

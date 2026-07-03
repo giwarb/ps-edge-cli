@@ -59,6 +59,17 @@ Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\cu
 3. 問題があれば、具体的な修正指示を添えて `codex exec resume --last` で差し戻す
 4. 差し戻しは **最大3回** まで。それでも解決しない場合のみ Claude が自分で修正してよい
 
+## ドキュメント同期ルール(必須)
+
+エージェント向けスキル `.claude/skills/ps-edge/SKILL.md` は**製品の一部**である。
+CLI のコマンド追加・削除・出力形式変更を行うタスクでは、同じタスク(同じ PR)内で必ず以下を更新する:
+
+1. `.claude/skills/ps-edge/SKILL.md`(チートシート・エラー対応表・レシピ)
+2. `README.md`(コマンドリファレンス表)
+3. `docs/DESIGN.md`(コマンド体系の正)
+
+Codex への仕様書にはこの3点の更新を受け入れ条件として含め、Claude はレビュー時に同期漏れを必ず確認する。将来の機能候補は `docs/ROADMAP.md` で管理する。
+
 ## コミット / PR
 
 - コミットは論理単位で行う(1機能・1修正 = 1コミット)
