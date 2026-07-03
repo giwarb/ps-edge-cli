@@ -5,7 +5,7 @@ function ConvertTo-PseJson {
         $Object
     )
 
-    $Object | ConvertTo-Json -Depth 12 -Compress
+    ConvertTo-Json -InputObject $Object -Depth 12 -Compress
 }
 
 function Get-PseFreePort {

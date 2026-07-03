@@ -4,12 +4,96 @@ function ConvertTo-PseStateHashtable {
         $State
     )
 
-    @{
+    $hash = @{
         port = $State.port
         pid = $State.pid
         userDataDir = $State.userDataDir
         targetId = $State.targetId
     }
+    if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
+        $hash.consoleHookTargetIds = @($State.consoleHookTargetIds | ForEach-Object { $_ })
+    }
+    return $hash
+}
+
+function Get-PseConsoleHookJs {
+    @'
+(function() {
+  if (window.__pseConsoleHookInstalled) {
+    return;
+  }
+  window.__pseConsoleHookInstalled = true;
+  window.__pseConsole = window.__pseConsole || [];
+  function stringify(value) {
+    try {
+      if (typeof value === "string") { return value; }
+      if (value instanceof Error) { return value.stack || value.message || String(value); }
+      var json = JSON.stringify(value);
+      if (json !== undefined) { return json; }
+      return String(value);
+    } catch (e) {
+      try { return String(value); } catch (e2) { return "[unprintable]"; }
+    }
+  }
+  function append(level, args) {
+    try {
+      window.__pseConsole.push({
+        level: level,
+        text: Array.prototype.map.call(args, stringify).join(" "),
+        ts: Date.now()
+      });
+      while (window.__pseConsole.length > 500) {
+        window.__pseConsole.shift();
+      }
+    } catch (e) {
+    }
+  }
+  ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+    var original = console[level];
+    console[level] = function() {
+      append(level, arguments);
+      if (typeof original === "function") {
+        return original.apply(console, arguments);
+      }
+    };
+  });
+  window.addEventListener("error", function(event) {
+    append("error", [event.message || "error"]);
+  });
+})();
+'@
+}
+
+function Install-PseConsoleHook {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        $State
+    )
+
+    $known = @()
+    if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
+        $known = @($State.consoleHookTargetIds | ForEach-Object { [string]$_ })
+    }
+
+    $script = Get-PseConsoleHookJs
+    if ($known -notcontains [string]$Session.TargetId) {
+        [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
+        $newState = ConvertTo-PseStateHashtable -State $State
+        $newKnown = New-Object System.Collections.ArrayList
+        foreach ($id in $known) {
+            if (-not [string]::IsNullOrWhiteSpace($id)) {
+                [void]$newKnown.Add($id)
+            }
+        }
+        [void]$newKnown.Add([string]$Session.TargetId)
+        $newState.consoleHookTargetIds = @($newKnown | ForEach-Object { $_ })
+        Write-PseState $newState
+    }
+
+    [void](Invoke-PseInPage -Session $Session -JsExpression $script)
 }
 
 function Get-PseSession {
@@ -44,10 +128,14 @@ function Get-PseSession {
     }
 
     if ($null -eq $selected) {
-        $selected = $targets[0]
+        $selected = $targets | Where-Object { $_.url -and $_.url -ne 'about:blank' } | Select-Object -First 1
+        if ($null -eq $selected) {
+            $selected = $targets[0]
+        }
         $newState = ConvertTo-PseStateHashtable -State $state
         $newState.targetId = $selected.id
         Write-PseState $newState
+        $state = [pscustomobject]$newState
     }
 
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
@@ -59,12 +147,14 @@ function Get-PseSession {
         throw
     }
 
-    [pscustomobject]@{
+    $session = [pscustomobject]@{
         Conn = $conn
         Port = [int]$state.port
         TargetId = $selected.id
         TargetInfo = $selected
     }
+    Install-PseConsoleHook -Session $session -State $state
+    return $session
 }
 
 function Close-PseSession {

@@ -452,6 +452,249 @@ function Invoke-PseCmdCdp {
     }
 }
 
+function Invoke-PseCmdClick {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 1) {
+        throw 'click requires a ref'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $button = 'left'
+    if ($Parsed.Options.ContainsKey('right')) {
+        $button = 'right'
+    }
+    $clickCount = 1
+    if ($Parsed.Options.ContainsKey('double')) {
+        $clickCount = 2
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $rect = Resolve-PseRef -Session $session -Ref $ref
+        Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+        Write-Output "Clicked $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdHover {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 1) {
+        throw 'hover requires a ref'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $rect = Resolve-PseRef -Session $session -Ref $ref
+        Send-PseMouseMove -Session $session -X ([double]$rect.x) -Y ([double]$rect.y)
+        Write-Output "Hovering $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdType {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'type requires a ref and text'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $text = [string]::Join(' ', @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ }))
+    $submit = $Parsed.Options.ContainsKey('submit')
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        [void](Resolve-PseRef -Session $session -Ref $ref)
+        Focus-PseRef -Session $session -Ref $ref
+        [void](Send-PseCdp -Conn $session.Conn -Method 'Input.insertText' -Params @{ text = $text })
+        if ($submit) {
+            Send-PseKey -Session $session -KeySpec 'Enter'
+        }
+        Write-Output "Typed into $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdFill {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'fill requires a ref and value'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $value = [string]::Join(' ', @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ }))
+    $session = $null
+    try {
+        $session = Get-PseSession
+        [void](Resolve-PseRef -Session $session -Ref $ref)
+        Set-PseRefValue -Session $session -Ref $ref -Value $value
+        Write-Output "Filled $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdPress {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 1) {
+        throw 'press requires a key'
+    }
+
+    $key = [string]$Parsed.Positional[0]
+    $session = $null
+    try {
+        $session = Get-PseSession
+        Send-PseKey -Session $session -KeySpec $key
+        Write-Output "Pressed $key"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdSelect {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'select requires a ref and at least one value'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $values = @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ })
+    $session = $null
+    try {
+        $session = Get-PseSession
+        [void](Resolve-PseRef -Session $session -Ref $ref)
+        $matched = @(Select-PseRefOptions -Session $session -Ref $ref -Values $values)
+        Write-Output "Selected $([string]::Join(', ', $matched)) in $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdWait {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $timeValue = Get-PseOptionValue -Parsed $Parsed -Name 'time' -Default $null
+    $text = Get-PseOptionValue -Parsed $Parsed -Name 'text' -Default $null
+    $gone = Get-PseOptionValue -Parsed $Parsed -Name 'gone' -Default $null
+    $timeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'timeoutsec' -Default 30)
+
+    if ($null -ne $timeValue) {
+        $milliseconds = [int]([double]$timeValue * 1000)
+        if ($milliseconds -gt 0) {
+            Start-Sleep -Milliseconds $milliseconds
+        }
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+        while ([DateTime]::UtcNow -le $deadline) {
+            $conditionParams = @{ Session = $session }
+            if ($null -ne $text) {
+                $conditionParams.Text = $text
+            }
+            if ($null -ne $gone) {
+                $conditionParams.Gone = $gone
+            }
+            if (Test-PseWaitCondition @conditionParams) {
+                Write-Output 'Wait condition met.'
+                Write-PseLocation -Session $session
+                return 0
+            }
+            Start-Sleep -Milliseconds 500
+        }
+
+        $target = 'load state complete'
+        if ($null -ne $text -and $null -ne $gone) {
+            $target = "text '$text' and gone '$gone'"
+        } elseif ($null -ne $text) {
+            $target = "text '$text'"
+        } elseif ($null -ne $gone) {
+            $target = "gone '$gone'"
+        }
+        Write-PseCliError "Error: timeout waiting for $target"
+        return 1
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdConsole {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $js = '(function(){ return JSON.stringify(window.__pseConsole || []); })()'
+        $json = Invoke-PseInPage -Session $session -JsExpression $js
+        $entries = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$json)) {
+            $entries = @($json | ConvertFrom-Json | ForEach-Object { $_ })
+        }
+        if ($entries.Count -eq 0) {
+            Write-Output 'No console messages captured.'
+        } else {
+            foreach ($entry in $entries) {
+                Write-Output "[$($entry.level)] $($entry.text)"
+            }
+        }
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 function Invoke-PseCmdTabs {
     param(
         [Parameter(Mandatory = $true)]

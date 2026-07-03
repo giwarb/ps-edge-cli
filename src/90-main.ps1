@@ -58,16 +58,16 @@ Commands:
   reload [-TimeoutSec 30]
   snapshot [-Selector <css>]
   screenshot [<path>] [-FullPage]
-  click <ref> [-Right] [-Double] (not implemented yet)
-  type <ref> <text> [-Submit] (not implemented yet)
-  fill <ref> <value> (not implemented yet)
-  press <key> (not implemented yet)
-  hover <ref> (not implemented yet)
-  select <ref> <value> [<value>...] (not implemented yet)
+  click <ref> [-Right] [-Double]
+  type <ref> <text> [-Submit]
+  fill <ref> <value>
+  press <key>
+  hover <ref>
+  select <ref> <value> [<value>...]
   eval <javascript>
-  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30] (not implemented yet)
+  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]
   tabs [list|new|select|close]
-  console (not implemented yet)
+  console
   cdp <method> [<params-json>]
   help
 '@
@@ -84,29 +84,18 @@ function Get-PseCommandMap {
         reload = 'Invoke-PseCmdReload'
         snapshot = 'Invoke-PseCmdSnapshot'
         screenshot = 'Invoke-PseCmdScreenshot'
+        click = 'Invoke-PseCmdClick'
+        type = 'Invoke-PseCmdType'
+        fill = 'Invoke-PseCmdFill'
+        press = 'Invoke-PseCmdPress'
+        hover = 'Invoke-PseCmdHover'
+        select = 'Invoke-PseCmdSelect'
         eval = 'Invoke-PseCmdEval'
+        wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'
+        console = 'Invoke-PseCmdConsole'
     }
-}
-
-function Test-PseNotImplementedCommand {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Command
-    )
-
-    $notImplemented = @(
-        'click',
-        'type',
-        'fill',
-        'press',
-        'hover',
-        'select',
-        'wait',
-        'console'
-    )
-    return ($notImplemented -contains $Command)
 }
 
 function Invoke-PseMain {
@@ -130,11 +119,6 @@ function Invoke-PseMain {
         if ([string]::IsNullOrWhiteSpace($command) -or $command -eq 'help' -or $command -eq '-h' -or $command -eq '--help') {
             [Console]::Out.WriteLine((Get-PseUsage))
             return 0
-        }
-
-        if (Test-PseNotImplementedCommand -Command $command) {
-            $host.ui.WriteErrorLine("Error: '$command' is not implemented yet")
-            return 1
         }
 
         $map = Get-PseCommandMap
