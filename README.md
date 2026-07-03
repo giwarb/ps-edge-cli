@@ -50,8 +50,10 @@ Stopped.
 | `goto` | `goto <url>` | ページへ移動して load を待ちます。裸のドメインは `https://` として扱います。 |
 | `back` / `forward` | `back` / `forward` | ブラウザ履歴を戻る、進む。 |
 | `reload` | `reload` | 現在ページを再読み込みして load を待ちます。 |
-| `snapshot` | `snapshot [-Selector <css>]` | DOM を走査し、AI が読みやすい YAML 風ツリーを出力します。操作可能要素には `[ref=eN]` が付きます。 |
+| `snapshot` | `snapshot [-Selector <css>] [-MaxChars 24000]` | DOM を走査し、AI が読みやすい YAML 風ツリーを出力します。操作可能要素には `[ref=eN]` が付きます。出力は既定で上限付きです。`-MaxChars 0` で無制限。 |
 | `screenshot` | `screenshot [<path>] [-FullPage]` | PNG スクリーンショットを保存します。path 省略時は CWD に `screenshot-<timestamp>.png`。 |
+| `pdf` | `pdf [<path>]` | 現在のページを PDF として保存します。path 省略時は CWD に `page-<timestamp>.pdf`。headless Edge が必要です。 |
+| `resize` | `resize <width> <height>` | 現在のページの viewport を正の整数サイズに設定します。 |
 | `click` | `click <ref> [-Right] [-Double]` | ref の要素を表示範囲へスクロールし、中央座標をクリックします。 |
 | `type` | `type <ref> <text> [-Submit]` | 要素へフォーカスしてテキストを挿入します。`-Submit` は Enter も送ります。 |
 | `fill` | `fill <ref> <value>` | JS で `.value` を設定し、`input` と `change` を発火します。 |
@@ -60,7 +62,7 @@ Stopped.
 | `select` | `select <ref> <value> [<value>...]` | select の option を value または label で選択し、`change` を発火します。 |
 | `upload` | `upload <ref> <path> [<path>...]` | Set one or more real local files on an `input[type=file]` ref via CDP. |
 | `eval` | `eval <javascript>` | `Runtime.evaluate` を `returnByValue:true, awaitPromise:true` で実行し、結果を JSON として表示します。 |
-| `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]` | 時間待ち、または body text の出現、消滅をポーリングします。 |
+| `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | 時間待ち、body text の出現/消滅、または CSS selector の出現/消滅をポーリングします。指定した条件はすべて満たす必要があります。 |
 | `tabs` | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | タブ一覧、新規作成、選択、終了。`select` は状態の `targetId` を更新します。 |
 | `console` | `console` | ページ内で捕捉した console log を表示します。best effort です。 |
 | `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Show or set the auto-response policy for suppressed `alert` / `confirm` / `prompt` dialogs. |

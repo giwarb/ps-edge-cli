@@ -155,6 +155,56 @@ function Wait-PseLoadEventOrWarn {
     }
 }
 
+function Limit-PseSnapshotText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Snapshot,
+
+        [Parameter(Mandatory = $true)]
+        [int]$MaxChars
+    )
+
+    if ($MaxChars -eq 0 -or $Snapshot.Length -le $MaxChars) {
+        return $Snapshot
+    }
+
+    $prefix = ''
+    if ($MaxChars -gt 0) {
+        $take = $MaxChars
+        if ($take -gt $Snapshot.Length) {
+            $take = $Snapshot.Length
+        }
+        $candidate = $Snapshot.Substring(0, $take)
+        $lastLineBreak = $candidate.LastIndexOf("`n")
+        if ($lastLineBreak -ge 0) {
+            $prefix = $candidate.Substring(0, $lastLineBreak).TrimEnd("`r")
+        }
+    }
+
+    $marker = "[snapshot truncated at $MaxChars chars - narrow with -Selector <css> or raise -MaxChars]"
+    if ([string]::IsNullOrEmpty($prefix)) {
+        return $marker
+    }
+    return $prefix + "`n" + $marker
+}
+
+function Resolve-PseOutputFilePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Kind
+    )
+
+    $absolutePath = [System.IO.Path]::GetFullPath($Path)
+    $parent = [System.IO.Path]::GetDirectoryName($absolutePath)
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "$Kind parent directory does not exist: $parent"
+    }
+    return $absolutePath
+}
+
 function Invoke-PseCmdStart {
     param(
         [Parameter(Mandatory = $true)]
@@ -385,6 +435,11 @@ function Invoke-PseCmdSnapshot {
     )
 
     $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $maxChars = [int](Get-PseOptionValue -Parsed $Parsed -Name 'maxchars' -Default 24000)
+    if ($maxChars -lt 0) {
+        Write-PseCliError 'Error: -MaxChars must be 0 or a positive integer'
+        return 1
+    }
     $session = $null
     try {
         $session = Get-PseSession
@@ -396,7 +451,7 @@ function Invoke-PseCmdSnapshot {
             return 1
         }
 
-        Write-Output ([string]$snapshot)
+        Write-Output (Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $maxChars)
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -417,11 +472,7 @@ function Invoke-PseCmdScreenshot {
         $path = 'screenshot-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.png'
     }
 
-    $absolutePath = [System.IO.Path]::GetFullPath($path)
-    $parent = [System.IO.Path]::GetDirectoryName($absolutePath)
-    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
-        throw "screenshot parent directory does not exist: $parent"
-    }
+    $absolutePath = Resolve-PseOutputFilePath -Path $path -Kind 'screenshot'
 
     $fullPage = $false
     if ($Parsed.Options.ContainsKey('fullpage')) {
@@ -467,6 +518,76 @@ function Invoke-PseCmdScreenshot {
         [System.IO.File]::WriteAllBytes($absolutePath, $bytes)
 
         Write-Output "Saved screenshot: $absolutePath ($($width)x$($height))"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdPdf {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $path = $null
+    if ($Parsed.Positional.Count -ge 1) {
+        $path = [string]$Parsed.Positional[0]
+    } else {
+        $path = 'page-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.pdf'
+    }
+
+    $absolutePath = Resolve-PseOutputFilePath -Path $path -Kind 'pdf'
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        try {
+            $result = Send-PseCdp -Conn $session.Conn -Method 'Page.printToPDF' -Params @{ printBackground = $true } -TimeoutSec 30
+        } catch {
+            Write-PseCliError "Error: pdf requires a headless session ($($_.Exception.Message))"
+            return 1
+        }
+        $bytes = [Convert]::FromBase64String([string]$result.data)
+        [System.IO.File]::WriteAllBytes($absolutePath, $bytes)
+
+        Write-Output "Saved pdf: $absolutePath"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdResize {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        Write-PseCliError 'Error: resize requires width and height'
+        return 1
+    }
+
+    $width = 0
+    $height = 0
+    if (-not [int]::TryParse([string]$Parsed.Positional[0], [ref]$width) -or -not [int]::TryParse([string]$Parsed.Positional[1], [ref]$height) -or $width -lt 1 -or $height -lt 1) {
+        Write-PseCliError 'Error: resize width and height must be positive integers'
+        return 1
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        [void](Send-PseCdp -Conn $session.Conn -Method 'Emulation.setDeviceMetricsOverride' -Params @{
+            width = $width
+            height = $height
+            deviceScaleFactor = 0
+            mobile = $false
+        })
+        Write-Output "Viewport set to $($width)x$($height)"
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -736,6 +857,8 @@ function Invoke-PseCmdWait {
     $timeValue = Get-PseOptionValue -Parsed $Parsed -Name 'time' -Default $null
     $text = Get-PseOptionValue -Parsed $Parsed -Name 'text' -Default $null
     $gone = Get-PseOptionValue -Parsed $Parsed -Name 'gone' -Default $null
+    $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $selectorGone = Get-PseOptionValue -Parsed $Parsed -Name 'selectorgone' -Default $null
     $timeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'timeoutsec' -Default 30)
 
     if ($null -ne $timeValue) {
@@ -749,6 +872,7 @@ function Invoke-PseCmdWait {
     try {
         $session = Get-PseSession
         $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+        $lastFailed = $null
         while ([DateTime]::UtcNow -le $deadline) {
             $conditionParams = @{ Session = $session }
             if ($null -ne $text) {
@@ -757,21 +881,29 @@ function Invoke-PseCmdWait {
             if ($null -ne $gone) {
                 $conditionParams.Gone = $gone
             }
-            if (Test-PseWaitCondition @conditionParams) {
+            if ($null -ne $selector) {
+                $conditionParams.Selector = $selector
+            }
+            if ($null -ne $selectorGone) {
+                $conditionParams.SelectorGone = $selectorGone
+            }
+            $waitResult = Test-PseWaitCondition @conditionParams
+            if ($null -ne $waitResult.InvalidSelector) {
+                Write-PseCliError "Error: invalid selector '$($waitResult.InvalidSelector)'"
+                return 1
+            }
+            if ($waitResult.Ok) {
                 Write-Output 'Wait condition met.'
                 Write-PseLocation -Session $session
                 return 0
             }
+            $lastFailed = $waitResult.Failed
             Start-Sleep -Milliseconds 500
         }
 
         $target = 'load state complete'
-        if ($null -ne $text -and $null -ne $gone) {
-            $target = "text '$text' and gone '$gone'"
-        } elseif ($null -ne $text) {
-            $target = "text '$text'"
-        } elseif ($null -ne $gone) {
-            $target = "gone '$gone'"
+        if (-not [string]::IsNullOrWhiteSpace([string]$lastFailed)) {
+            $target = [string]$lastFailed
         }
         Write-PseCliError "Error: timeout waiting for $target"
         return 1

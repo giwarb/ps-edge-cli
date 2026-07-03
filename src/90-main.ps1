@@ -61,8 +61,10 @@ Commands:
   back
   forward
   reload [-TimeoutSec 30]
-  snapshot [-Selector <css>]
+  snapshot [-Selector <css>] [-MaxChars 24000]
   screenshot [<path>] [-FullPage]
+  pdf [<path>]
+  resize <width> <height>
   click <ref> [-Right] [-Double]
   type <ref> <text> [-Submit]
   fill <ref> <value>
@@ -71,7 +73,7 @@ Commands:
   select <ref> <value> [<value>...]
   upload <ref> <path> [<path>...]
   eval <javascript>
-  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]
+  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
   dialog [-Accept [-Text <reply>] | -Dismiss]
@@ -92,6 +94,8 @@ function Get-PseCommandMap {
         reload = 'Invoke-PseCmdReload'
         snapshot = 'Invoke-PseCmdSnapshot'
         screenshot = 'Invoke-PseCmdScreenshot'
+        pdf = 'Invoke-PseCmdPdf'
+        resize = 'Invoke-PseCmdResize'
         click = 'Invoke-PseCmdClick'
         type = 'Invoke-PseCmdType'
         fill = 'Invoke-PseCmdFill'

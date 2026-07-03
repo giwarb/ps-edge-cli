@@ -39,8 +39,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Shut down | `stop` — Check liveness: `status` |
 | Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
-| Read page (primary tool) | `snapshot [-Selector <css>]` |
+| Read page (primary tool) | `snapshot [-Selector <css>] [-MaxChars 24000]` |
 | Pixels | `screenshot [<path>] [-FullPage]` |
+| PDF | `pdf [<path>]` |
+| Resize viewport | `resize <width> <height>` |
 | Click | `click <ref> [-Right] [-Double]` |
 | Type into field | `type <ref> <text> [-Submit]` (`-Submit` presses Enter after) |
 | Set value directly | `fill <ref> <value>` (fires input+change; fastest for forms) |
@@ -49,7 +51,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Dropdown | `select <ref> <value> [<value>...]` (matches option value or label) |
 | Upload files | `upload <ref> <path> [<path>...]` |
 | Run JavaScript | `eval <expression>` (returnByValue, promises awaited) |
-| Wait | `wait -Text <str>` / `wait -Gone <str>` / `wait -Time <sec>` (`-TimeoutSec 30`) |
+| Wait | `wait -Text <str>` / `wait -Gone <str>` / `wait -Selector <css>` / `wait -SelectorGone <css>` / `wait -Time <sec>` (`-TimeoutSec 30`) |
 | Tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` |
 | Console logs | `console` (captured best-effort after the session hook is installed) |
 | JS dialogs | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` |
@@ -74,6 +76,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 - Hidden elements are omitted. If something you expect is missing, it may be
   collapsed behind a menu/accordion — click the toggle first, then re-snapshot.
 - Huge page? Scope with `snapshot -Selector "main"` (any CSS selector).
+- If the output ends with `[snapshot truncated at <n> chars - narrow with -Selector <css> or raise -MaxChars]`, the right response is usually to re-run `snapshot -Selector "<narrow container>"`, not to raise the limit blindly.
 
 ## Error recovery playbook
 
@@ -83,6 +86,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | `Error: browser is not running - run 'start' first` | Run `start -Headless` (state lives in `%TEMP%\ps-edge\state.json`). |
 | `port 9222 is already in use` | Another session owns it: `stop` first, or use `start -Port <other>`. |
 | `# warning: load event not fired within 30s` | Page is slow/SPA; it may still be usable — `snapshot` and check, or `wait -Text <expected>`. |
+| `[snapshot truncated at <n> chars - narrow with -Selector <css> or raise -MaxChars]` | Re-run `snapshot -Selector "<specific container>"`; only raise `-MaxChars` when broad page context is truly needed. |
 | Click had no visible effect | `snapshot` again (DOM may have changed), check `console` for JS errors, or try `eval` on the element directly. |
 | Element exists but not in snapshot | It may be in an iframe (not yet supported) — fall back to `eval`/`cdp`, or note the limitation. |
 | Exit code 1 | Read stderr (`Error: ...` line); every failure states its cause. |

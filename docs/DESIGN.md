@@ -71,8 +71,10 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | goto | `goto <url>` | `Page.navigate` + wait for load event. Bare domains get `https://`. |
 | back / forward | `back` / `forward` | History navigation via `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`. |
 | reload | `reload` | `Page.reload` + wait for load. |
-| snapshot | `snapshot [-Selector <css>]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements. See below. |
+| snapshot | `snapshot [-Selector <css>] [-MaxChars 24000]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements. Output is capped in PowerShell; `-MaxChars 0` disables the cap. See below. |
 | screenshot | `screenshot [<path>] [-FullPage]` | `Page.captureScreenshot` (png). Default path `screenshot-<timestamp>.png` in CWD. Prints saved path. |
+| pdf | `pdf [<path>]` | `Page.printToPDF` with backgrounds. Default path `page-<timestamp>.pdf` in CWD. Requires a headless session. |
+| resize | `resize <width> <height>` | `Emulation.setDeviceMetricsOverride` on the current page target; positive integer dimensions only. |
 | click | `click <ref> [-Right] [-Double]` | Resolve ref, scrollIntoView, center coords, `Input.dispatchMouseEvent`. |
 | type | `type <ref> <text> [-Submit]` | Focus element, `Input.insertText`; `-Submit` sends Enter key events after. |
 | fill | `fill <ref> <value>` | JS: set `.value`, dispatch `input`+`change`. For fast form filling. |
@@ -81,7 +83,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | select | `select <ref> <value> [<value>...]` | JS: set selected options by value or label, dispatch `change`. |
 | upload | `upload <ref> <path> [<path>...]` | Resolve paths locally, verify ref is `input[type=file]`, then use CDP `DOM.setFileInputFiles`. |
 | eval | `eval <javascript>` | `Runtime.evaluate` with `returnByValue:true, awaitPromise:true`; print JSON result. |
-| wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains). |
+| wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains, `document.querySelector` exists / is gone). All supplied conditions must hold. |
 | tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | `/json/list`, `/json/new` (PUT), `/json/close/<id>`, `/json/activate/<id>`. `select` updates `targetId` in state. |
 | console | `console` | Reads `window.__pseConsole` (hook injected at start/goto via `Page.addScriptToEvaluateOnNewDocument`). Best effort. |
 | dialog | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Native `alert`/`confirm`/`prompt` are suppressed by an injected hook, recorded in `window.__pseDialogs`, and answered from persisted policy. |

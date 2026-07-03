@@ -403,15 +403,26 @@ function Test-PseWaitCondition {
         [string]$Text,
 
         [AllowNull()]
-        [string]$Gone
+        [string]$Gone,
+
+        [AllowNull()]
+        [string]$Selector,
+
+        [AllowNull()]
+        [string]$SelectorGone
     )
 
     $hasText = $PSBoundParameters.ContainsKey('Text')
     $hasGone = $PSBoundParameters.ContainsKey('Gone')
+    $hasSelector = $PSBoundParameters.ContainsKey('Selector')
+    $hasSelectorGone = $PSBoundParameters.ContainsKey('SelectorGone')
 
-    if (-not $hasText -and -not $hasGone) {
+    if (-not $hasText -and -not $hasGone -and -not $hasSelector -and -not $hasSelectorGone) {
         $ready = Invoke-PseInPage -Session $Session -JsExpression "(function(){ return document.readyState === 'complete'; })()" -TimeoutSec 5
-        return [bool]$ready
+        if ([bool]$ready) {
+            return [pscustomobject]@{ Ok = $true; Failed = $null; InvalidSelector = $null }
+        }
+        return [pscustomobject]@{ Ok = $false; Failed = 'load state complete'; InvalidSelector = $null }
     }
 
     $textJson = 'null'
@@ -422,16 +433,49 @@ function Test-PseWaitCondition {
     if ($hasGone) {
         $goneJson = ConvertTo-PseJson $Gone
     }
+    $selectorJson = 'null'
+    if ($hasSelector) {
+        $selectorJson = ConvertTo-PseJson $Selector
+    }
+    $selectorGoneJson = 'null'
+    if ($hasSelectorGone) {
+        $selectorGoneJson = ConvertTo-PseJson $SelectorGone
+    }
     $js = @"
 (function() {
   var text = $textJson;
   var gone = $goneJson;
+  var selector = $selectorJson;
+  var selectorGone = $selectorGoneJson;
   var bodyText = document.body ? String(document.body.innerText || document.body.textContent || "") : "";
-  if (text !== null && bodyText.indexOf(String(text)) === -1) { return false; }
-  if (gone !== null && bodyText.indexOf(String(gone)) !== -1) { return false; }
-  return true;
+  if (text !== null && bodyText.indexOf(String(text)) === -1) { return JSON.stringify({ ok: false, failed: "text '" + String(text) + "'" }); }
+  if (gone !== null && bodyText.indexOf(String(gone)) !== -1) { return JSON.stringify({ ok: false, failed: "gone '" + String(gone) + "'" }); }
+  if (selector !== null) {
+    try {
+      if (document.querySelector(String(selector)) === null) {
+        return JSON.stringify({ ok: false, failed: "selector '" + String(selector) + "'" });
+      }
+    } catch (e) {
+      return JSON.stringify({ ok: false, invalidSelector: String(selector) });
+    }
+  }
+  if (selectorGone !== null) {
+    try {
+      if (document.querySelector(String(selectorGone)) !== null) {
+        return JSON.stringify({ ok: false, failed: "selector gone '" + String(selectorGone) + "'" });
+      }
+    } catch (e2) {
+      return JSON.stringify({ ok: false, invalidSelector: String(selectorGone) });
+    }
+  }
+  return JSON.stringify({ ok: true });
 })()
 "@
-    $matched = Invoke-PseInPage -Session $Session -JsExpression $js -TimeoutSec 5
-    return [bool]$matched
+    $json = Invoke-PseInPage -Session $Session -JsExpression $js -TimeoutSec 5
+    $result = $json | ConvertFrom-Json
+    return [pscustomobject]@{
+        Ok = [bool]$result.ok
+        Failed = $result.failed
+        InvalidSelector = $result.invalidSelector
+    }
 }
