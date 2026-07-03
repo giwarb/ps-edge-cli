@@ -42,7 +42,8 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 
 - Each CLI invocation is a fresh process. The browser survives between invocations
   because it runs with `--remote-debugging-port`.
-- State file `%TEMP%\ps-edge\state.json`: `{ port, pid, userDataDir, targetId }`.
+- State file `%TEMP%\ps-edge\state.json`: `{ port, pid, userDataDir, targetId,
+  attached, downloadDir }`.
   `targetId` = currently selected tab. Commands read it to find the browser.
 - Element refs (`e1`, `e2`, ...) are assigned by `snapshot` and stored **inside the
   page** as `window.__pseRefs` (ref -> Element map). They stay valid until navigation.
@@ -63,24 +64,29 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 
 | Command | Syntax | Implementation notes |
 |---|---|---|
-| start | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, save state. |
+| start | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
 | stop | `stop` | `Browser.close` via CDP, fallback kill PID, clear state. |
 | status | `status` | Show port/pid/version/tabs, or "not running". |
+| downloads | `downloads [-Dir <path>]` | List files in the configured download directory (or explicit `-Dir`), newest first, marking partial downloads. |
 | goto | `goto <url>` | `Page.navigate` + wait for load event. Bare domains get `https://`. |
 | back / forward | `back` / `forward` | History navigation via `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`. |
 | reload | `reload` | `Page.reload` + wait for load. |
-| snapshot | `snapshot [-Selector <css>]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements. See below. |
+| snapshot | `snapshot [-Selector <css>] [-MaxChars 24000]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements. Output is capped in PowerShell; `-MaxChars 0` disables the cap. See below. |
 | screenshot | `screenshot [<path>] [-FullPage]` | `Page.captureScreenshot` (png). Default path `screenshot-<timestamp>.png` in CWD. Prints saved path. |
+| pdf | `pdf [<path>]` | `Page.printToPDF` with backgrounds. Default path `page-<timestamp>.pdf` in CWD. Requires a headless session. |
+| resize | `resize <width> <height>` | `Emulation.setDeviceMetricsOverride` on the current page target; positive integer dimensions only. |
 | click | `click <ref> [-Right] [-Double]` | Resolve ref, scrollIntoView, center coords, `Input.dispatchMouseEvent`. |
 | type | `type <ref> <text> [-Submit]` | Focus element, `Input.insertText`; `-Submit` sends Enter key events after. |
 | fill | `fill <ref> <value>` | JS: set `.value`, dispatch `input`+`change`. For fast form filling. |
 | press | `press <key>` | `Input.dispatchKeyEvent`. Keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, plus `Control+A` style combos. |
 | hover | `hover <ref>` | `Input.dispatchMouseEvent` type=mouseMoved at element center. |
 | select | `select <ref> <value> [<value>...]` | JS: set selected options by value or label, dispatch `change`. |
+| upload | `upload <ref> <path> [<path>...]` | Resolve paths locally, verify ref is `input[type=file]`, then use CDP `DOM.setFileInputFiles`. |
 | eval | `eval <javascript>` | `Runtime.evaluate` with `returnByValue:true, awaitPromise:true`; print JSON result. |
-| wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains). |
+| wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains, `document.querySelector` exists / is gone). All supplied conditions must hold. |
 | tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | `/json/list`, `/json/new` (PUT), `/json/close/<id>`, `/json/activate/<id>`. `select` updates `targetId` in state. |
 | console | `console` | Reads `window.__pseConsole` (hook injected at start/goto via `Page.addScriptToEvaluateOnNewDocument`). Best effort. |
+| dialog | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Native `alert`/`confirm`/`prompt` are suppressed by an injected hook, recorded in `window.__pseDialogs`, and answered from persisted policy. |
 | cdp | `cdp <method> [<params-json>]` | Raw CDP escape hatch, e.g. `cdp Page.navigate '{"url":"https://example.com"}'`. Prints result JSON. |
 | help | `help [command]` | Usage. Also shown on unknown command (to stderr). |
 

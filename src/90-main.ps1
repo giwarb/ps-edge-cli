@@ -9,10 +9,13 @@ function ConvertFrom-PseArgs {
     $options = @{}
     $flags = @{
         headless = $true
+        attach = $true
         fullpage = $true
         right = $true
         double = $true
         submit = $true
+        accept = $true
+        dismiss = $true
     }
 
     if ($null -ne $Args -and $Args.Count -eq 1 -and $Args[0] -is [System.Array] -and -not ($Args[0] -is [string])) {
@@ -49,25 +52,31 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>]
+  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start -Attach [-Port 9222]
   stop
   status
+  downloads [-Dir <path>]
   goto <url> [-TimeoutSec 30]
   back
   forward
   reload [-TimeoutSec 30]
-  snapshot [-Selector <css>]
+  snapshot [-Selector <css>] [-MaxChars 24000]
   screenshot [<path>] [-FullPage]
+  pdf [<path>]
+  resize <width> <height>
   click <ref> [-Right] [-Double]
   type <ref> <text> [-Submit]
   fill <ref> <value>
   press <key>
   hover <ref>
   select <ref> <value> [<value>...]
+  upload <ref> <path> [<path>...]
   eval <javascript>
-  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-TimeoutSec 30]
+  wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
+  dialog [-Accept [-Text <reply>] | -Dismiss]
   cdp <method> [<params-json>]
   help
 '@
@@ -78,23 +87,28 @@ function Get-PseCommandMap {
         start = 'Invoke-PseCmdStart'
         stop = 'Invoke-PseCmdStop'
         status = 'Invoke-PseCmdStatus'
+        downloads = 'Invoke-PseCmdDownloads'
         goto = 'Invoke-PseCmdGoto'
         back = 'Invoke-PseCmdBack'
         forward = 'Invoke-PseCmdForward'
         reload = 'Invoke-PseCmdReload'
         snapshot = 'Invoke-PseCmdSnapshot'
         screenshot = 'Invoke-PseCmdScreenshot'
+        pdf = 'Invoke-PseCmdPdf'
+        resize = 'Invoke-PseCmdResize'
         click = 'Invoke-PseCmdClick'
         type = 'Invoke-PseCmdType'
         fill = 'Invoke-PseCmdFill'
         press = 'Invoke-PseCmdPress'
         hover = 'Invoke-PseCmdHover'
         select = 'Invoke-PseCmdSelect'
+        upload = 'Invoke-PseCmdUpload'
         eval = 'Invoke-PseCmdEval'
         wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'
         console = 'Invoke-PseCmdConsole'
+        dialog = 'Invoke-PseCmdDialog'
     }
 }
 

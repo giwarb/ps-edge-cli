@@ -155,6 +155,56 @@ function Wait-PseLoadEventOrWarn {
     }
 }
 
+function Limit-PseSnapshotText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Snapshot,
+
+        [Parameter(Mandatory = $true)]
+        [int]$MaxChars
+    )
+
+    if ($MaxChars -eq 0 -or $Snapshot.Length -le $MaxChars) {
+        return $Snapshot
+    }
+
+    $prefix = ''
+    if ($MaxChars -gt 0) {
+        $take = $MaxChars
+        if ($take -gt $Snapshot.Length) {
+            $take = $Snapshot.Length
+        }
+        $candidate = $Snapshot.Substring(0, $take)
+        $lastLineBreak = $candidate.LastIndexOf("`n")
+        if ($lastLineBreak -ge 0) {
+            $prefix = $candidate.Substring(0, $lastLineBreak).TrimEnd("`r")
+        }
+    }
+
+    $marker = "[snapshot truncated at $MaxChars chars - narrow with -Selector <css> or raise -MaxChars]"
+    if ([string]::IsNullOrEmpty($prefix)) {
+        return $marker
+    }
+    return $prefix + "`n" + $marker
+}
+
+function Resolve-PseOutputFilePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Kind
+    )
+
+    $absolutePath = [System.IO.Path]::GetFullPath($Path)
+    $parent = [System.IO.Path]::GetDirectoryName($absolutePath)
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "$Kind parent directory does not exist: $parent"
+    }
+    return $absolutePath
+}
+
 function Invoke-PseCmdStart {
     param(
         [Parameter(Mandatory = $true)]
@@ -164,13 +214,42 @@ function Invoke-PseCmdStart {
     $port = [int](Get-PseOptionValue -Parsed $Parsed -Name 'port' -Default 9222)
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
+    $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
     $headless = $false
     if ($Parsed.Options.ContainsKey('headless')) {
         $headless = [bool]$Parsed.Options['headless']
     }
+    $attach = $false
+    if ($Parsed.Options.ContainsKey('attach')) {
+        $attach = [bool]$Parsed.Options['attach']
+    }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir
+    if ($attach) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir')) {
+            Write-PseCliError 'Error: -Attach does not launch a browser'
+            return 1
+        }
+
+        try {
+            $version = Attach-PseBrowser -Port $port
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
+        $state = Read-PseState
+        Write-Output "Attached to Edge $($version.Browser) on port $port"
+        $targets = @(Get-PseTargets -Port $port)
+        for ($i = 0; $i -lt $targets.Count; $i++) {
+            Write-Output (Format-PseTabLine -Index ($i + 1) -Target $targets[$i] -CurrentTargetId $state.targetId)
+        }
+        return 0
+    }
+
+    $version = Start-PseBrowser -Port $port -Headless:$headless -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
     $state = Read-PseState
+    if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
+        Write-Output '# warning: could not set download dir'
+    }
     Write-Output "Started Edge $($version.Browser) (pid $($state.pid)) on port $port"
     $targets = @(Get-PseTargets -Port $port)
     for ($i = 0; $i -lt $targets.Count; $i++) {
@@ -187,8 +266,13 @@ function Invoke-PseCmdStop {
         return 0
     }
 
+    $attached = ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached)
     Stop-PseBrowser
-    Write-Output 'Stopped.'
+    if ($attached) {
+        Write-Output 'Detached (browser left running).'
+    } else {
+        Write-Output 'Stopped.'
+    }
     return 0
 }
 
@@ -202,10 +286,54 @@ function Invoke-PseCmdStatus {
     $version = Invoke-PseHttpJson -Port ([int]$info.State.port) -Path '/json/version'
     Write-Output "port: $($info.State.port)"
     Write-Output "pid: $($info.State.pid)"
+    if ($null -ne $info.State.PSObject.Properties['attached'] -and $info.State.attached) {
+        Write-Output 'attached: true'
+    }
     Write-Output "browser: $($version.Browser)"
     for ($i = 0; $i -lt $info.Targets.Count; $i++) {
         Write-Output (Format-PseTabLine -Index ($i + 1) -Target $info.Targets[$i] -CurrentTargetId $info.State.targetId)
     }
+    return 0
+}
+
+function Invoke-PseCmdDownloads {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $dir = Get-PseOptionValue -Parsed $Parsed -Name 'dir' -Default $null
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        $state = Read-PseState
+        if ($null -ne $state -and $null -ne $state.PSObject.Properties['downloadDir']) {
+            $dir = $state.downloadDir
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        Write-PseCliError 'Error: no download directory configured (start without -Attach, or pass -Dir)'
+        return 1
+    }
+
+    $absoluteDir = [System.IO.Path]::GetFullPath([string]$dir)
+    if (-not (Test-Path -LiteralPath $absoluteDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $absoluteDir | Out-Null
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $absoluteDir -File | Sort-Object LastWriteTime -Descending)
+    if ($files.Count -eq 0) {
+        Write-Output 'No downloads yet.'
+    } else {
+        foreach ($file in $files) {
+            $suffix = ''
+            if ($file.Name.EndsWith('.crdownload', [System.StringComparison]::OrdinalIgnoreCase) -or $file.Name.EndsWith('.partial', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $suffix = '  [in progress]'
+            }
+            Write-Output ("{0}  {1}  {2}{3}" -f $file.Length, $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $file.Name, $suffix)
+        }
+    }
+
+    Write-Output "# dir: $absoluteDir"
     return 0
 }
 
@@ -307,6 +435,11 @@ function Invoke-PseCmdSnapshot {
     )
 
     $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $maxChars = [int](Get-PseOptionValue -Parsed $Parsed -Name 'maxchars' -Default 24000)
+    if ($maxChars -lt 0) {
+        Write-PseCliError 'Error: -MaxChars must be 0 or a positive integer'
+        return 1
+    }
     $session = $null
     try {
         $session = Get-PseSession
@@ -318,7 +451,7 @@ function Invoke-PseCmdSnapshot {
             return 1
         }
 
-        Write-Output ([string]$snapshot)
+        Write-Output (Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $maxChars)
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -339,11 +472,7 @@ function Invoke-PseCmdScreenshot {
         $path = 'screenshot-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.png'
     }
 
-    $absolutePath = [System.IO.Path]::GetFullPath($path)
-    $parent = [System.IO.Path]::GetDirectoryName($absolutePath)
-    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
-        throw "screenshot parent directory does not exist: $parent"
-    }
+    $absolutePath = Resolve-PseOutputFilePath -Path $path -Kind 'screenshot'
 
     $fullPage = $false
     if ($Parsed.Options.ContainsKey('fullpage')) {
@@ -389,6 +518,76 @@ function Invoke-PseCmdScreenshot {
         [System.IO.File]::WriteAllBytes($absolutePath, $bytes)
 
         Write-Output "Saved screenshot: $absolutePath ($($width)x$($height))"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdPdf {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $path = $null
+    if ($Parsed.Positional.Count -ge 1) {
+        $path = [string]$Parsed.Positional[0]
+    } else {
+        $path = 'page-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.pdf'
+    }
+
+    $absolutePath = Resolve-PseOutputFilePath -Path $path -Kind 'pdf'
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        try {
+            $result = Send-PseCdp -Conn $session.Conn -Method 'Page.printToPDF' -Params @{ printBackground = $true } -TimeoutSec 30
+        } catch {
+            Write-PseCliError "Error: pdf requires a headless session ($($_.Exception.Message))"
+            return 1
+        }
+        $bytes = [Convert]::FromBase64String([string]$result.data)
+        [System.IO.File]::WriteAllBytes($absolutePath, $bytes)
+
+        Write-Output "Saved pdf: $absolutePath"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdResize {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        Write-PseCliError 'Error: resize requires width and height'
+        return 1
+    }
+
+    $width = 0
+    $height = 0
+    if (-not [int]::TryParse([string]$Parsed.Positional[0], [ref]$width) -or -not [int]::TryParse([string]$Parsed.Positional[1], [ref]$height) -or $width -lt 1 -or $height -lt 1) {
+        Write-PseCliError 'Error: resize width and height must be positive integers'
+        return 1
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        [void](Send-PseCdp -Conn $session.Conn -Method 'Emulation.setDeviceMetricsOverride' -Params @{
+            width = $width
+            height = $height
+            deviceScaleFactor = 0
+            mobile = $false
+        })
+        Write-Output "Viewport set to $($width)x$($height)"
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -613,6 +812,42 @@ function Invoke-PseCmdSelect {
     }
 }
 
+function Invoke-PseCmdUpload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    if ($Parsed.Positional.Count -lt 2) {
+        throw 'upload requires a ref and at least one path'
+    }
+
+    $ref = [string]$Parsed.Positional[0]
+    $files = New-Object System.Collections.ArrayList
+    foreach ($path in @($Parsed.Positional | Select-Object -Skip 1 | ForEach-Object { [string]$_ })) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            Write-PseCliError "Error: file not found: $path"
+            return 1
+        }
+        [void]$files.Add([System.IO.Path]::GetFullPath($path))
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        if (-not (Test-PseRefFileInput -Session $session -Ref $ref)) {
+            Write-PseCliError "Error: $ref is not a file input"
+            return 1
+        }
+        Set-PseRefFileInputFiles -Session $session -Ref $ref -Files @($files | ForEach-Object { [string]$_ })
+        Write-Output "Uploaded $($files.Count) file(s) to $ref"
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 function Invoke-PseCmdWait {
     param(
         [Parameter(Mandatory = $true)]
@@ -622,6 +857,8 @@ function Invoke-PseCmdWait {
     $timeValue = Get-PseOptionValue -Parsed $Parsed -Name 'time' -Default $null
     $text = Get-PseOptionValue -Parsed $Parsed -Name 'text' -Default $null
     $gone = Get-PseOptionValue -Parsed $Parsed -Name 'gone' -Default $null
+    $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $selectorGone = Get-PseOptionValue -Parsed $Parsed -Name 'selectorgone' -Default $null
     $timeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'timeoutsec' -Default 30)
 
     if ($null -ne $timeValue) {
@@ -635,6 +872,7 @@ function Invoke-PseCmdWait {
     try {
         $session = Get-PseSession
         $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+        $lastFailed = $null
         while ([DateTime]::UtcNow -le $deadline) {
             $conditionParams = @{ Session = $session }
             if ($null -ne $text) {
@@ -643,26 +881,106 @@ function Invoke-PseCmdWait {
             if ($null -ne $gone) {
                 $conditionParams.Gone = $gone
             }
-            if (Test-PseWaitCondition @conditionParams) {
+            if ($null -ne $selector) {
+                $conditionParams.Selector = $selector
+            }
+            if ($null -ne $selectorGone) {
+                $conditionParams.SelectorGone = $selectorGone
+            }
+            $waitResult = Test-PseWaitCondition @conditionParams
+            if ($null -ne $waitResult.InvalidSelector) {
+                Write-PseCliError "Error: invalid selector '$($waitResult.InvalidSelector)'"
+                return 1
+            }
+            if ($waitResult.Ok) {
                 Write-Output 'Wait condition met.'
                 Write-PseLocation -Session $session
                 return 0
             }
+            $lastFailed = $waitResult.Failed
             Start-Sleep -Milliseconds 500
         }
 
         $target = 'load state complete'
-        if ($null -ne $text -and $null -ne $gone) {
-            $target = "text '$text' and gone '$gone'"
-        } elseif ($null -ne $text) {
-            $target = "text '$text'"
-        } elseif ($null -ne $gone) {
-            $target = "gone '$gone'"
+        if (-not [string]::IsNullOrWhiteSpace([string]$lastFailed)) {
+            $target = [string]$lastFailed
         }
         Write-PseCliError "Error: timeout waiting for $target"
         return 1
     } finally {
         Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdDialog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $accept = $Parsed.Options.ContainsKey('accept')
+    $dismiss = $Parsed.Options.ContainsKey('dismiss')
+    if ($accept -and $dismiss) {
+        Write-PseCliError 'Error: -Accept and -Dismiss cannot be used together'
+        return 1
+    }
+
+    if ($accept -or $dismiss) {
+        $state = Read-PseState
+        if ($null -eq $state -or -not $state.port) {
+            Write-PseCliError "Error: browser is not running - run 'start' first"
+            return 1
+        }
+
+        $newState = ConvertTo-PseStateHashtable -State $state
+        if ($accept) {
+            $newState.dialogMode = 'accept'
+            if ($Parsed.Options.ContainsKey('text')) {
+                $newState.dialogText = [string]$Parsed.Options['text']
+            } else {
+                $newState.dialogText = $null
+            }
+        } else {
+            $newState.dialogMode = 'dismiss'
+            $newState.dialogText = $null
+        }
+        Write-PseState $newState
+
+        $policy = Get-PseDialogPolicy -State ([pscustomobject]$newState)
+        $session = $null
+        try {
+            $session = Get-PseSession
+            Set-PseDialogPolicyInPage -Session $session -Policy $policy
+            Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
+            return 0
+        } finally {
+            Close-PseSession -Session $session
+        }
+    }
+
+    $stateForPolicy = Read-PseState
+    $policyForDisplay = Get-PseDialogPolicy -State $stateForPolicy
+    $sessionForRead = $null
+    try {
+        $sessionForRead = Get-PseSession
+        $js = '(function(){ return JSON.stringify(window.__pseDialogs || []); })()'
+        $json = Invoke-PseInPage -Session $sessionForRead -JsExpression $js
+        $entries = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$json)) {
+            $entries = @($json | ConvertFrom-Json | ForEach-Object { $_ })
+        }
+        Write-Output (Format-PseDialogPolicy -Policy $policyForDisplay)
+        if ($entries.Count -eq 0) {
+            Write-Output 'No dialogs captured.'
+        } else {
+            foreach ($entry in $entries) {
+                Write-Output "[$($entry.type)] $($entry.message) -> $($entry.response)"
+            }
+        }
+        Write-PseLocation -Session $sessionForRead
+        return 0
+    } finally {
+        Close-PseSession -Session $sessionForRead
     }
 }
 

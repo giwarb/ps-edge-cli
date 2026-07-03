@@ -37,7 +37,9 @@ function Start-PseBrowser {
 
         [string]$Url = 'about:blank',
 
-        [string]$UserDataDir
+        [string]$UserDataDir,
+
+        [string]$DownloadDir
     )
 
     try {
@@ -54,6 +56,14 @@ function Start-PseBrowser {
     }
     if (-not (Test-Path -LiteralPath $UserDataDir)) {
         New-Item -ItemType Directory -Path $UserDataDir | Out-Null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
+        $DownloadDir = Join-Path (Get-PseStateDir) "downloads-$Port"
+    }
+    $DownloadDir = [System.IO.Path]::GetFullPath($DownloadDir)
+    if (-not (Test-Path -LiteralPath $DownloadDir)) {
+        New-Item -ItemType Directory -Path $DownloadDir | Out-Null
     }
 
     $edgePath = Get-PseEdgePath
@@ -101,14 +111,83 @@ function Start-PseBrowser {
         pid = $process.Id
         userDataDir = $UserDataDir
         targetId = $null
+        attached = $false
+        downloadDir = $DownloadDir
+    }
+
+    $downloadWarning = $false
+    try {
+        Set-PseDownloadBehavior -Version $version -DownloadDir $DownloadDir
+    } catch {
+        $downloadWarning = $true
+    }
+    Add-Member -InputObject $version -MemberType NoteProperty -Name pseDownloadWarning -Value $downloadWarning -Force
+
+    return $version
+}
+
+function Attach-PseBrowser {
+    param(
+        [int]$Port = 9222
+    )
+
+    try {
+        $version = Invoke-PseHttpJson -Port $Port -Path '/json/version'
+    } catch {
+        throw "no CDP endpoint on port $Port - launch Edge first: msedge.exe --remote-debugging-port=$Port"
+    }
+
+    if ($null -eq $version) {
+        throw "no CDP endpoint on port $Port - launch Edge first: msedge.exe --remote-debugging-port=$Port"
+    }
+
+    Write-PseState @{
+        port = $Port
+        pid = $null
+        userDataDir = $null
+        targetId = $null
+        attached = $true
+        downloadDir = $null
     }
 
     return $version
 }
 
+function Set-PseDownloadBehavior {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DownloadDir
+    )
+
+    if ($null -eq $Version -or -not $Version.webSocketDebuggerUrl) {
+        throw 'browser WebSocket URL was not available'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $Version.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Browser.setDownloadBehavior' -Params @{
+            behavior = 'allow'
+            downloadPath = $DownloadDir
+        } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
 function Stop-PseBrowser {
     $state = Read-PseState
     if ($null -eq $state) {
+        return
+    }
+
+    if ($null -ne $state.PSObject.Properties['attached'] -and $state.attached) {
+        Clear-PseState
         return
     }
 
