@@ -12,10 +12,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 ## Locating the CLI
 
-- In this repository: `.\ps-edge.ps1` (dev entry) or `.\dist\ps-edge.ps1` (bundle).
-- On other machines: copy the single file `dist\ps-edge.ps1` anywhere and run it.
-- Invoke as: `powershell -NoProfile -ExecutionPolicy Bypass -File <path>\ps-edge.ps1 <command> [args]`
-  (or directly `.\ps-edge.ps1 <command>` when the execution policy allows).
+- The CLI lives at `scripts\ps-edge.ps1` relative to this `SKILL.md`.
+- Invoke as: `powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>\scripts\ps-edge.ps1 <command> [args]`.
+- To install, copy the whole `skills/ps-edge` folder into `~/.claude/skills/`
+  (user-level) or `<project>/.claude/skills/` (project-level).
 
 ## The golden loop
 
@@ -120,6 +120,8 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 ## Maintenance rule (for developers of ps-edge-cli)
 
 This skill is part of the product. **Any PR that adds, removes, or changes a CLI
-command or its output format MUST update this SKILL.md in the same PR** (cheat sheet,
-error table, and recipes), plus README.md and docs/DESIGN.md. An outdated skill
-actively misleads every agent that uses the tool.
+command or its output format MUST update `skills/ps-edge/SKILL.md` in the same PR**
+(cheat sheet, error table, and recipes), plus README.md and docs/DESIGN.md.
+`.claude/skills/ps-edge/` is a generated copy for dogfooding in this repository:
+edit the file under `skills/`, then run `build.ps1`. An outdated skill actively
+misleads every agent that uses the tool.

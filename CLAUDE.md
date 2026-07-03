@@ -61,10 +61,10 @@ Get-Content .codex-task.md -Raw | & C:\Users\yoshi\.codex\packages\standalone\cu
 
 ## ドキュメント同期ルール(必須)
 
-エージェント向けスキル `.claude/skills/ps-edge/SKILL.md` は**製品の一部**である。
+エージェント向けスキル `skills/ps-edge/SKILL.md` は**製品の一部**である。
 CLI のコマンド追加・削除・出力形式変更を行うタスクでは、同じタスク(同じ PR)内で必ず以下を更新する:
 
-1. `.claude/skills/ps-edge/SKILL.md`(チートシート・エラー対応表・レシピ)
+1. `skills/ps-edge/SKILL.md`(チートシート・エラー対応表・レシピ)
 2. `README.md`(コマンドリファレンス表)
 3. `docs/DESIGN.md`(コマンド体系の正)
 

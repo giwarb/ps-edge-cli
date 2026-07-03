@@ -46,5 +46,5 @@ are listed as P2 with honest notes on difficulty.
 ## Maintenance rule
 
 Every feature PR must update, in the same PR: `docs/DESIGN.md` (command table),
-`README.md` (reference table), and `.claude/skills/ps-edge/SKILL.md` (cheat sheet /
+`README.md` (reference table), and `skills/ps-edge/SKILL.md` (cheat sheet /
 error playbook). See CLAUDE.md.

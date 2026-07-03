@@ -22,16 +22,20 @@ src/NN-name.ps1      # function-only files (NO top-level side effects), NN = loa
   70-actions.ps1     #   click/type/fill/press/hover/select/wait/console
   80-commands.ps1    #   one Invoke-PseCmd* function per CLI command
   90-main.ps1        #   Invoke-PseMain: arg parsing, dispatch table, help
-build.ps1            # bundles everything into dist/ps-edge.ps1 (single file)
-dist/ps-edge.ps1     # generated, committed artifact
+build.ps1            # bundles everything into skills/ps-edge/scripts/ps-edge.ps1 and syncs .claude/skills
+skills/ps-edge/      # distributable agent skill folder
+skills/ps-edge/scripts/ps-edge.ps1  # generated, committed artifact
+.claude/skills/ps-edge/             # generated, untracked dogfood copy
 tests/*.Tests.ps1    # throw on failure; run via tests/run-tests.ps1
 docs/DESIGN.md       # this file
 ```
 
 **Bundling contract:** `src/*.ps1` files contain only function definitions, so
-`dist/ps-edge.ps1` is produced by concatenating `src/*.ps1` (sorted by name) followed by
+`skills/ps-edge/scripts/ps-edge.ps1` is produced by concatenating `src/*.ps1` (sorted by name) followed by
 the line `Invoke-PseMain @args`. The dev entry `ps-edge.ps1` does the same thing via
-dot-sourcing. Both must behave identically.
+dot-sourcing. Both must behave identically. `build.ps1` also copies the canonical
+`skills/ps-edge` folder to `.claude/skills/ps-edge` for project-local dogfooding; that
+copy is generated and untracked.
 
 ## Function naming
 

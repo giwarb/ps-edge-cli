@@ -2,7 +2,10 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $buildPath = Join-Path $repoRoot 'build.ps1'
-$distPath = Join-Path $repoRoot 'dist\ps-edge.ps1'
+$distPath = Join-Path $repoRoot 'skills\ps-edge\scripts\ps-edge.ps1'
+$skillPath = Join-Path $repoRoot 'skills\ps-edge\SKILL.md'
+$dogfoodSkillPath = Join-Path $repoRoot '.claude\skills\ps-edge\SKILL.md'
+$dogfoodBundlePath = Join-Path $repoRoot '.claude\skills\ps-edge\scripts\ps-edge.ps1'
 $srcDir = Join-Path $repoRoot 'src'
 
 function Assert-PseTrue {
@@ -57,6 +60,28 @@ function ConvertTo-PseTestCommandLine {
         [void]$quoted.Add($builder.ToString())
     }
     return [string]::Join(' ', @($quoted | ForEach-Object { [string]$_ }))
+}
+
+function Assert-PseSameBytes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ActualPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $expectedBytes = [System.IO.File]::ReadAllBytes($ExpectedPath)
+    $actualBytes = [System.IO.File]::ReadAllBytes($ActualPath)
+    Assert-PseTrue ($expectedBytes.Length -eq $actualBytes.Length) "$Label byte lengths differ."
+    for ($i = 0; $i -lt $expectedBytes.Length; $i++) {
+        if ($expectedBytes[$i] -ne $actualBytes[$i]) {
+            throw "$Label bytes differ at offset $i."
+        }
+    }
 }
 
 function Invoke-PseDistCliForTest {
@@ -131,7 +156,14 @@ function Get-PseTestRef {
 }
 
 & $buildPath | Out-Host
-Assert-PseTrue (Test-Path -LiteralPath $distPath) 'build.ps1 did not create dist/ps-edge.ps1.'
+Assert-PseTrue (Test-Path -LiteralPath $distPath) 'build.ps1 did not create skills/ps-edge/scripts/ps-edge.ps1.'
+Assert-PseTrue (Test-Path -LiteralPath $dogfoodSkillPath) 'build.ps1 did not sync .claude/skills/ps-edge/SKILL.md.'
+Assert-PseTrue (Test-Path -LiteralPath $dogfoodBundlePath) 'build.ps1 did not sync .claude/skills/ps-edge/scripts/ps-edge.ps1.'
+Assert-PseSameBytes -ExpectedPath $skillPath -ActualPath $dogfoodSkillPath -Label 'Synced SKILL.md'
+Assert-PseSameBytes -ExpectedPath $distPath -ActualPath $dogfoodBundlePath -Label 'Synced bundle'
+
+$skillText = Get-Content -LiteralPath $skillPath -Raw
+Assert-PseTrue (-not ($skillText.Contains('dist\') -or $skillText.Contains('dist/'))) 'skills/ps-edge/SKILL.md must not contain dist paths.'
 
 $bundleText = Get-Content -LiteralPath $distPath -Raw
 [void][scriptblock]::Create($bundleText)
