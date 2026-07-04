@@ -16,6 +16,7 @@ function ConvertFrom-PseArgs {
         submit = $true
         accept = $true
         dismiss = $true
+        noquietflags = $true
     }
 
     if ($null -ne $Args -and $Args.Count -eq 1 -and $Args[0] -is [System.Array] -and -not ($Args[0] -is [string])) {
@@ -27,7 +28,21 @@ function ConvertFrom-PseArgs {
         $token = [string]$Args[$i]
         if ($token -match '^--?(.+)$') {
             $name = $Matches[1].ToLowerInvariant()
-            if ($flags.ContainsKey($name)) {
+            if ($name -eq 'extraarg') {
+                $values = $null
+                if ($options.ContainsKey($name)) {
+                    $values = $options[$name]
+                } else {
+                    $values = New-Object System.Collections.ArrayList
+                    $options[$name] = $values
+                }
+                if (($i + 1) -lt $Args.Count) {
+                    [void]$values.Add([string]$Args[$i + 1])
+                    $i++
+                } else {
+                    [void]$values.Add('')
+                }
+            } elseif ($flags.ContainsKey($name)) {
                 $options[$name] = $true
             } elseif (($i + 1) -lt $Args.Count -and ([string]$Args[$i + 1]) -notmatch '^-') {
                 $options[$name] = [string]$Args[$i + 1]
@@ -52,7 +67,7 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
   start -Attach [-Port 9222]
   stop
   status

@@ -29,11 +29,80 @@ function Get-PseEdgePath {
     throw 'msedge.exe was not found.'
 }
 
+function Get-PseEdgeLaunchArguments {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$UserDataDir,
+        [switch]$Headless,
+        [switch]$NoQuietFlags,
+        [string[]]$ExtraArg,
+        [string]$Url = 'about:blank'
+    )
+
+    $arguments = @(
+        "--remote-debugging-port=$Port",
+        "--user-data-dir=$UserDataDir",
+        '--no-first-run',
+        '--no-default-browser-check'
+    )
+
+    if (-not $NoQuietFlags) {
+        $arguments += '--disable-field-trial-config'
+        $arguments += '--disable-background-networking'
+        $arguments += '--disable-background-timer-throttling'
+        $arguments += '--disable-backgrounding-occluded-windows'
+        $arguments += '--disable-back-forward-cache'
+        $arguments += '--disable-breakpad'
+        $arguments += '--disable-client-side-phishing-detection'
+        $arguments += '--disable-component-extensions-with-background-pages'
+        $arguments += '--disable-component-update'
+        $arguments += '--disable-default-apps'
+        $arguments += '--disable-extensions'
+        $arguments += '--disable-hang-monitor'
+        $arguments += '--disable-infobars'
+        $arguments += '--disable-ipc-flooding-protection'
+        $arguments += '--disable-popup-blocking'
+        $arguments += '--disable-prompt-on-repost'
+        $arguments += '--disable-renderer-backgrounding'
+        $arguments += '--disable-search-engine-choice-screen'
+        $arguments += '--disable-sync'
+        $arguments += '--edge-skip-compat-layer-relaunch'
+        $arguments += '--force-color-profile=srgb'
+        $arguments += '--metrics-recording-only'
+        $arguments += '--no-service-autorun'
+        $arguments += '--password-store=basic'
+        $arguments += '--use-mock-keychain'
+        $arguments += '--export-tagged-pdf'
+        $arguments += '--allow-pre-commit-input'
+        $arguments += '--disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn'
+    }
+
+    if ($Headless) {
+        $arguments += '--headless'
+        $arguments += '--disable-gpu'
+        $arguments += '--no-sandbox'
+        $arguments += '--disable-dev-shm-usage'
+    }
+
+    if ($null -ne $ExtraArg) {
+        foreach ($arg in $ExtraArg) {
+            $arguments += $arg
+        }
+    }
+
+    $arguments += $Url
+    return $arguments
+}
+
 function Start-PseBrowser {
     param(
         [int]$Port = 9222,
 
         [switch]$Headless,
+
+        [switch]$NoQuietFlags,
+
+        [string[]]$ExtraArg,
 
         [string]$Url = 'about:blank',
 
@@ -67,19 +136,7 @@ function Start-PseBrowser {
     }
 
     $edgePath = Get-PseEdgePath
-    $arguments = @(
-        "--remote-debugging-port=$Port",
-        "--user-data-dir=$UserDataDir",
-        '--no-first-run',
-        '--no-default-browser-check'
-    )
-    if ($Headless) {
-        $arguments += '--headless'
-        $arguments += '--disable-gpu'
-        $arguments += '--no-sandbox'
-        $arguments += '--disable-dev-shm-usage'
-    }
-    $arguments += $Url
+    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $Url
 
     $process = Start-Process -FilePath $edgePath -ArgumentList $arguments -PassThru
     $version = $null

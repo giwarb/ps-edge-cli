@@ -1,5 +1,5 @@
 param(
-    [string]$OutFile = (Join-Path $PSScriptRoot 'dist\ps-edge.ps1')
+    [string]$OutFile = (Join-Path $PSScriptRoot 'skills\ps-edge\scripts\ps-edge.ps1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,3 +106,27 @@ $encoding = New-Object System.Text.UTF8Encoding($true)
 
 $item = Get-Item -LiteralPath $OutFile
 Write-Host ("Wrote {0} ({1} bytes)" -f $item.FullName, $item.Length)
+
+$skillDir = Join-Path $repoRoot 'skills\ps-edge'
+$dogfoodDir = Join-Path $repoRoot '.claude\skills\ps-edge'
+if (-not (Test-Path -LiteralPath $skillDir)) {
+    throw "Skill directory not found: $skillDir"
+}
+if (-not (Test-Path -LiteralPath $dogfoodDir)) {
+    [void](New-Item -ItemType Directory -Path $dogfoodDir)
+}
+
+$syncedCount = 0
+$skillFiles = @(Get-ChildItem -LiteralPath $skillDir -Recurse -File | Sort-Object FullName)
+foreach ($skillFile in $skillFiles) {
+    $relativePath = $skillFile.FullName.Substring($skillDir.Length).TrimStart('\', '/')
+    $targetPath = Join-Path $dogfoodDir $relativePath
+    $targetDir = Split-Path -Parent $targetPath
+    if (-not [string]::IsNullOrWhiteSpace($targetDir) -and -not (Test-Path -LiteralPath $targetDir)) {
+        [void](New-Item -ItemType Directory -Path $targetDir)
+    }
+    Copy-Item -LiteralPath $skillFile.FullName -Destination $targetPath -Force
+    $syncedCount++
+}
+
+Write-Host ("Synced {0} file(s) to {1}" -f $syncedCount, $dogfoodDir)

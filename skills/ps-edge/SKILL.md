@@ -12,10 +12,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 ## Locating the CLI
 
-- In this repository: `.\ps-edge.ps1` (dev entry) or `.\dist\ps-edge.ps1` (bundle).
-- On other machines: copy the single file `dist\ps-edge.ps1` anywhere and run it.
-- Invoke as: `powershell -NoProfile -ExecutionPolicy Bypass -File <path>\ps-edge.ps1 <command> [args]`
-  (or directly `.\ps-edge.ps1 <command>` when the execution policy allows).
+- The CLI lives at `scripts\ps-edge.ps1` relative to this `SKILL.md`.
+- Invoke as: `powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>\scripts\ps-edge.ps1 <command> [args]`.
+- To install, copy the whole `skills/ps-edge` folder into `~/.claude/skills/`
+  (user-level) or `<project>/.claude/skills/` (project-level).
 
 ## The golden loop
 
@@ -35,7 +35,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 | Goal | Command |
 |---|---|
-| Launch browser | `start [-Port 9222] [-Headless] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
+| Launch browser | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
 | Shut down | `stop` — Check liveness: `status` |
 | Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
@@ -106,6 +106,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
   ports share that single state file — avoid concurrent sessions.
 - `start` without `-Headless` opens a visible window — useful when a human wants to
   watch or take over.
+- Quiet launch flags are on by default: no sync/sign-in prompts, no extension
+  dialogs, and extensions are disabled. Use `-NoQuietFlags` when you need
+  extensions or Edge's stock behavior; use repeated `-ExtraArg <arg>` to pass raw
+  Chromium switches.
 - To use a logged-in real profile, manually launch Edge first with
   `msedge.exe --remote-debugging-port=9222`, then run `start -Attach`; `stop` only
   detaches and leaves that browser running.
@@ -120,6 +124,8 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 ## Maintenance rule (for developers of ps-edge-cli)
 
 This skill is part of the product. **Any PR that adds, removes, or changes a CLI
-command or its output format MUST update this SKILL.md in the same PR** (cheat sheet,
-error table, and recipes), plus README.md and docs/DESIGN.md. An outdated skill
-actively misleads every agent that uses the tool.
+command or its output format MUST update `skills/ps-edge/SKILL.md` in the same PR**
+(cheat sheet, error table, and recipes), plus README.md and docs/DESIGN.md.
+`.claude/skills/ps-edge/` is a generated copy for dogfooding in this repository:
+edit the file under `skills/`, then run `build.ps1`. An outdated skill actively
+misleads every agent that uses the tool.
