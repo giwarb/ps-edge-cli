@@ -44,7 +44,7 @@ function ConvertFrom-PseArgs {
                 }
             } elseif ($flags.ContainsKey($name)) {
                 $options[$name] = $true
-            } elseif (($i + 1) -lt $Args.Count -and ([string]$Args[$i + 1]) -notmatch '^-') {
+            } elseif (($i + 1) -lt $Args.Count -and (([string]$Args[$i + 1]) -notmatch '^-' -or ([string]$Args[$i + 1]) -match '^-\d+(?:\.\d+)?$')) {
                 $options[$name] = [string]$Args[$i + 1]
                 $i++
             } else {
@@ -77,6 +77,7 @@ Commands:
   forward
   reload [-TimeoutSec 30]
   snapshot [-Selector <css>] [-MaxChars 24000]
+  inspect [-Selector <css>] [-MaxItems 200]
   screenshot [<path>] [-FullPage]
   pdf [<path>]
   resize <width> <height>
@@ -88,6 +89,7 @@ Commands:
   select <ref> <value> [<value>...]
   upload <ref> <path> [<path>...]
   eval <javascript>
+  batch -Json <json-array>
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
@@ -108,6 +110,7 @@ function Get-PseCommandMap {
         forward = 'Invoke-PseCmdForward'
         reload = 'Invoke-PseCmdReload'
         snapshot = 'Invoke-PseCmdSnapshot'
+        inspect = 'Invoke-PseCmdInspect'
         screenshot = 'Invoke-PseCmdScreenshot'
         pdf = 'Invoke-PseCmdPdf'
         resize = 'Invoke-PseCmdResize'
@@ -119,6 +122,7 @@ function Get-PseCommandMap {
         select = 'Invoke-PseCmdSelect'
         upload = 'Invoke-PseCmdUpload'
         eval = 'Invoke-PseCmdEval'
+        batch = 'Invoke-PseCmdBatch'
         wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'

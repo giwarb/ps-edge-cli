@@ -13,7 +13,10 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 ## Locating the CLI
 
 - The CLI lives at `scripts\ps-edge.ps1` relative to this `SKILL.md`.
-- Invoke as: `powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>\scripts\ps-edge.ps1 <command> [args]`.
+- From PowerShell, invoke directly: `& <skill-dir>\scripts\ps-edge.ps1 <command> [args]`.
+  Do not start a nested `powershell.exe` for every browser operation.
+- From a non-PowerShell host, use the portable fallback:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>\scripts\ps-edge.ps1 <command> [args]`.
 - To install, copy the whole `skills/ps-edge` folder into `~/.claude/skills/`
   (user-level) or `<project>/.claude/skills/` (project-level).
 
@@ -21,9 +24,11 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 1. `start -Headless` once per session (add `-Port <n>` if 9222 is taken).
 2. `goto <url>`
-3. `snapshot` — read the tree, find your target's `[ref=eN]`.
-4. Act by ref: `click eN` / `type eN "text" -Submit` / `fill eN "value"` / `select eN value`.
-5. **After any navigation, form submit, or big DOM change: `snapshot` again.**
+3. For forms, run `inspect`; use `snapshot` only when you need surrounding page text.
+4. Put related known operations in one `batch -Json '[...]'`, with a final verification
+   step. Use single `click` / `fill` / `select` commands only for isolated actions.
+5. **After navigation, ref invalidation, or a big DOM change: observe again.**
+   Do not take a snapshot after every field mutation.
    Refs are stored inside the page and are wiped by navigation — never reuse old refs
    across page loads.
 6. Verify progress with the `# url:` / `# title:` footer lines every page command
@@ -39,7 +44,8 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Shut down | `stop` — Check liveness: `status` |
 | Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
-| Read page (primary tool) | `snapshot [-Selector <css>] [-MaxChars 24000]` |
+| Read page context | `snapshot [-Selector <css>] [-MaxChars 24000]` |
+| Inspect form controls (preferred for forms) | `inspect [-Selector <css>] [-MaxItems 200]` |
 | Pixels | `screenshot [<path>] [-FullPage]` |
 | PDF | `pdf [<path>]` |
 | Resize viewport | `resize <width> <height>` |
@@ -51,6 +57,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Dropdown | `select <ref> <value> [<value>...]` (matches option value or label) |
 | Upload files | `upload <ref> <path> [<path>...]` |
 | Run JavaScript | `eval <expression>` (returnByValue, promises awaited) |
+| Run related operations once | `batch -Json <json-array>` |
 | Wait | `wait -Text <str>` / `wait -Gone <str>` / `wait -Selector <css>` / `wait -SelectorGone <css>` / `wait -Time <sec>` (`-TimeoutSec 30`) |
 | Tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` |
 | Console logs | `console` (captured best-effort after the session hook is installed) |
@@ -78,11 +85,29 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 - Huge page? Scope with `snapshot -Selector "main"` (any CSS selector).
 - If the output ends with `[snapshot truncated at <n> chars - narrow with -Selector <css> or raise -MaxChars]`, the right response is usually to re-run `snapshot -Selector "<narrow container>"`, not to raise the limit blindly.
 
+## Efficient form workflow
+
+`inspect` returns one compressed JSON array containing refs, accessible names, DOM IDs,
+current values, checked/disabled state, and select options. Use it instead of a broad
+snapshot when locating form controls.
+
+After refs are known, batch related work:
+
+```powershell
+$steps = '[{"action":"fill","ref":"e2","value":"hello"},{"action":"select","ref":"e3","values":["v2"]},{"action":"eval","expression":"({value:document.querySelector(\"#subject\").value})"}]'
+& $cli batch -Json $steps
+```
+
+The result contains `ok`, ordered `steps`, and one final `url` / `title`. Batch fails
+fast; `Error: batch step 1 (select): ...` means later steps were not run.
+
 ## Error recovery playbook
 
 | Symptom | Fix |
 |---|---|
-| `Error: ref 'eN' not found - run 'snapshot' first` | Page navigated since your last snapshot. Run `snapshot`, get fresh refs. |
+| `Error: ref 'eN' not found - run 'snapshot' first` | Page navigated since your last observation. Run `inspect` for controls or `snapshot` for page context, then use fresh refs. |
+| `Error: batch step N (action): ...` | The batch stopped at that zero-based step. Inspect/snapshot again if navigation invalidated refs, then submit a corrected remaining batch. |
+| `Error: invalid selector ...` from `inspect` | Fix or narrow the CSS selector. A no-match selector is also an explicit error. |
 | `Error: browser is not running - run 'start' first` | Run `start -Headless` (state lives in `%TEMP%\ps-edge\state.json`). |
 | `port 9222 is already in use` | Another session owns it: `stop` first, or use `start -Port <other>`. |
 | `# warning: load event not fired within 30s` | Page is slow/SPA; it may still be usable — `snapshot` and check, or `wait -Text <expected>`. |
@@ -97,6 +122,8 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
   go in single quotes so the double quotes survive.
 - `fill` is faster and more reliable than `type` for plain form fields; use `type`
   when the page listens to real key events (autocomplete, rich editors).
+- Prefer one `batch` for several fills/selects and one final `eval` verification. This
+  avoids a new PowerShell process, HTTP discovery, and CDP WebSocket for every field.
 - For login flows: `goto` → snapshot → fill credentials → `click` submit →
   `wait -Text <something only visible when logged in>` → snapshot.
 - `eval` returns JSON — use it to extract data in bulk instead of parsing snapshots

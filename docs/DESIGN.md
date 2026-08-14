@@ -49,7 +49,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 - State file `%TEMP%\ps-edge\state.json`: `{ port, pid, userDataDir, targetId,
   attached, downloadDir }`.
   `targetId` = currently selected tab. Commands read it to find the browser.
-- Element refs (`e1`, `e2`, ...) are assigned by `snapshot` and stored **inside the
+- Element refs (`e1`, `e2`, ...) are assigned by `snapshot` or `inspect` and stored **inside the
   page** as `window.__pseRefs` (ref -> Element map). They stay valid until navigation.
   Action commands resolve refs there; a missing map/ref yields:
   `Error: ref 'e5' not found - run 'snapshot' first (refs are reset by navigation)`.
@@ -61,8 +61,10 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 - Output: UTF-8 text designed to be pasted into an LLM context. Success output is
   plain lines; errors go to stderr as `Error: <message>` with exit code 1; success
   exits 0.
-- Every command that talks to the page prints, at the end:
+- Every single command that talks to the page prints, at the end:
   `# url: <current url>` and `# title: <title>` (helps AI keep orientation).
+- `batch` is the structured exception: it returns one compressed JSON object with ordered
+  step results and final `url` / `title`, using one page session for all steps.
 
 ## Command set (v1)
 
@@ -75,7 +77,8 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | goto | `goto <url>` | `Page.navigate` + wait for load event. Bare domains get `https://`. |
 | back / forward | `back` / `forward` | History navigation via `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`. |
 | reload | `reload` | `Page.reload` + wait for load. |
-| snapshot | `snapshot [-Selector <css>] [-MaxChars 24000]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements. Output is capped in PowerShell; `-MaxChars 0` disables the cap. See below. |
+| snapshot | `snapshot [-Selector <css>] [-MaxChars 24000]` | Injected JS walks DOM, emits YAML-ish a11y tree with `[ref=eN]` on interactive elements, and stops traversal at the browser-side budget. PowerShell applies a final safety cap; `-MaxChars 0` disables the cap. |
+| inspect | `inspect [-Selector <css>] [-MaxItems 200]` | Return a compressed JSON array of visible interactive controls with refs, accessible names, values, state, and select options. Traversal stops at MaxItems; `0` is unlimited. |
 | screenshot | `screenshot [<path>] [-FullPage]` | `Page.captureScreenshot` (png). Default path `screenshot-<timestamp>.png` in CWD. Prints saved path. |
 | pdf | `pdf [<path>]` | `Page.printToPDF` with backgrounds. Default path `page-<timestamp>.pdf` in CWD. Requires a headless session. |
 | resize | `resize <width> <height>` | `Emulation.setDeviceMetricsOverride` on the current page target; positive integer dimensions only. |
@@ -87,6 +90,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | select | `select <ref> <value> [<value>...]` | JS: set selected options by value or label, dispatch `change`. |
 | upload | `upload <ref> <path> [<path>...]` | Resolve paths locally, verify ref is `input[type=file]`, then use CDP `DOM.setFileInputFiles`. |
 | eval | `eval <javascript>` | `Runtime.evaluate` with `returnByValue:true, awaitPromise:true`; print JSON result. |
+| batch | `batch -Json <json-array>` | Parse and validate a JSON step array, open one page session, execute `eval` / `snapshot` / `inspect` / `click` / `fill` / `type` / `press` / `select` / `wait` / `goto` / `reload` sequentially, fail fast with the step index, then return one compressed result object. |
 | wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains, `document.querySelector` exists / is gone). All supplied conditions must hold. |
 | tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | `/json/list`, `/json/new` (PUT), `/json/close/<id>`, `/json/activate/<id>`. `select` updates `targetId` in state. |
 | console | `console` | Reads `window.__pseConsole` (hook injected at start/goto via `Page.addScriptToEvaluateOnNewDocument`). Best effort. |
@@ -118,6 +122,19 @@ Rules:
   script/style/noscript/head.
 - Accessible name resolution (simplified): aria-label > associated <label> >
   placeholder > title > trimmed innerText (truncated).
+- The browser-side character counter stops traversal as soon as MaxChars is exceeded;
+  the existing PowerShell limiter formats the stable truncation marker.
+
+## Inspect and batch interface
+
+- `inspect` is the preferred observation for forms and control-heavy legacy pages. It
+  avoids serializing unrelated page text and includes current values and select options.
+- `batch` reuses the same low-level action helpers as single commands. It never invokes
+  command handlers recursively and obtains/closes one `Get-PseSession` per invocation.
+- Steps are static JSON. A prior `inspect` / `snapshot` supplies refs; steps may also use
+  `inspect` / `snapshot` after navigation before a later invocation.
+- Batch errors are not partial success objects. stderr identifies the zero-based step and
+  action, and execution stops before later steps.
 
 ## CDP client rules (PowerShell 5.1)
 

@@ -14,7 +14,7 @@ function Add-PseBundleLine {
     )
 
     [void]$Builder.Append($Line)
-    [void]$Builder.Append("`r`n")
+    [void]$Builder.Append("`n")
 }
 
 function Get-PseEntryPointTail {
@@ -91,6 +91,7 @@ Add-PseBundleLine $builder ''
 foreach ($file in $srcFiles) {
     Add-PseBundleLine $builder ('# Source: src/' + $file.Name)
     $content = [System.IO.File]::ReadAllText($file.FullName)
+    $content = $content.Replace("`r`n", "`n").Replace("`r", "`n")
     [void]$builder.Append($content.TrimEnd("`r", "`n"))
     Add-PseBundleLine $builder ''
     Add-PseBundleLine $builder ''

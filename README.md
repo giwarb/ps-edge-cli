@@ -50,7 +50,8 @@ Stopped.
 | `goto` | `goto <url>` | ページへ移動して load を待ちます。裸のドメインは `https://` として扱います。 |
 | `back` / `forward` | `back` / `forward` | ブラウザ履歴を戻る、進む。 |
 | `reload` | `reload` | 現在ページを再読み込みして load を待ちます。 |
-| `snapshot` | `snapshot [-Selector <css>] [-MaxChars 24000]` | DOM を走査し、AI が読みやすい YAML 風ツリーを出力します。操作可能要素には `[ref=eN]` が付きます。出力は既定で上限付きです。`-MaxChars 0` で無制限。 |
+| `snapshot` | `snapshot [-Selector <css>] [-MaxChars 24000]` | DOM を走査し、AI が読みやすい YAML 風ツリーを出力します。操作可能要素には `[ref=eN]` が付きます。上限到達時はブラウザ内の走査も停止します。`-MaxChars 0` で無制限。 |
+| `inspect` | `inspect [-Selector <css>] [-MaxItems 200]` | 表示中の操作可能要素だけを、ref・名前・現在値・select option を含む圧縮 JSON 配列で返します。フォーム操作では `snapshot` より優先します。 |
 | `screenshot` | `screenshot [<path>] [-FullPage]` | PNG スクリーンショットを保存します。path 省略時は CWD に `screenshot-<timestamp>.png`。 |
 | `pdf` | `pdf [<path>]` | 現在のページを PDF として保存します。path 省略時は CWD に `page-<timestamp>.pdf`。headless Edge が必要です。 |
 | `resize` | `resize <width> <height>` | 現在のページの viewport を正の整数サイズに設定します。 |
@@ -62,6 +63,7 @@ Stopped.
 | `select` | `select <ref> <value> [<value>...]` | select の option を value または label で選択し、`change` を発火します。 |
 | `upload` | `upload <ref> <path> [<path>...]` | Set one or more real local files on an `input[type=file]` ref via CDP. |
 | `eval` | `eval <javascript>` | `Runtime.evaluate` を `returnByValue:true, awaitPromise:true` で実行し、結果を JSON として表示します。 |
+| `batch` | `batch -Json <json-array>` | `eval` / `snapshot` / `inspect` / `click` / `fill` / `type` / `press` / `select` / `wait` / `goto` / `reload` を1プロセス・1 CDP 接続で順次実行し、結果と最終 URL/title を1つの JSON で返します。 |
 | `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | 時間待ち、body text の出現/消滅、または CSS selector の出現/消滅をポーリングします。指定した条件はすべて満たす必要があります。 |
 | `tabs` | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | タブ一覧、新規作成、選択、終了。`select` は状態の `targetId` を更新します。 |
 | `console` | `console` | ページ内で捕捉した console log を表示します。best effort です。 |
@@ -77,12 +79,14 @@ Claude Code などのエージェントには、スキル [skills/ps-edge/SKILL.
 
 推奨ループ:
 
-1. `snapshot` で現在のページ構造と ref を取得する。
-2. `click eN`、`type eN "text"`、`fill eN "value"`、`select eN value` など、ref で操作する。
-3. ナビゲーション、フォーム送信、画面更新の後は必ず `snapshot` を取り直す。
-4. 判断に迷う場合は `# url:` と `# title:` を確認してから次の操作を決める。
+1. フォームなら `inspect`、ページ全体の文脈が必要なら `snapshot` で ref を取得する。
+2. 複数の既知操作は `batch -Json '[...]'` にまとめ、最後の step で検証する。
+3. ナビゲーション、ref 失効、または大きな DOM 変更の後だけ再度 `inspect` / `snapshot` する。フィールドを1つ変えるたびに読み直さない。
+4. 単発操作では `# url:` / `# title:`、batch では結果 JSON の `url` / `title` を確認する。
 
-ref は `snapshot` 実行時にページ内へ保存されます。ページ遷移で ref はリセットされるため、古い `e1` や `e2` を使い回さないでください。ref が見つからないエラーが出たら、まず `snapshot` を再実行します。
+ref は `inspect` または `snapshot` 実行時にページ内へ保存されます。ページ遷移で ref はリセットされるため、古い `e1` や `e2` を使い回さないでください。ref が見つからないエラーが出たら、再度 `inspect` または `snapshot` を実行します。
+
+PowerShell 上ではスクリプトを `& .\skills\ps-edge\scripts\ps-edge.ps1 inspect` のように直接呼び出してください。すでに PowerShell を実行しているのに、各操作でさらに `powershell.exe -File ...` を起動すると不要なプロセス起動時間が加わります。
 
 ## Development
 

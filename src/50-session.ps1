@@ -192,28 +192,12 @@ function Install-PseConsoleHook {
         $State
     )
 
-    $known = @()
-    if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
-        $known = @($State.consoleHookTargetIds | ForEach-Object { [string]$_ })
-    }
+    $policyJson = ConvertTo-PseJson (Get-PseDialogPolicy -State $State)
+    $script = (Get-PsePageHookJs) + "`nwindow.__pseDialogPolicy = $policyJson;"
 
-    $script = Get-PsePageHookJs
-    if ($known -notcontains [string]$Session.TargetId) {
-        [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
-        $newState = ConvertTo-PseStateHashtable -State $State
-        $newKnown = New-Object System.Collections.ArrayList
-        foreach ($id in $known) {
-            if (-not [string]::IsNullOrWhiteSpace($id)) {
-                [void]$newKnown.Add($id)
-            }
-        }
-        [void]$newKnown.Add([string]$Session.TargetId)
-        $newState.consoleHookTargetIds = @($newKnown | ForEach-Object { $_ })
-        Write-PseState $newState
-    }
-
+    # CDP new-document registrations belong to the current connection.
+    [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
     [void](Invoke-PseInPage -Session $Session -JsExpression $script)
-    Set-PseDialogPolicyInPage -Session $Session -Policy (Get-PseDialogPolicy -State $State)
 }
 
 function Get-PseSession {
@@ -227,7 +211,6 @@ function Get-PseSession {
     }
 
     try {
-        [void](Invoke-PseHttpJson -Port ([int]$state.port) -Path '/json/version')
         $targets = @(Get-PseTargets -Port ([int]$state.port))
     } catch {
         throw "browser is not running - run 'start' first"
@@ -261,8 +244,6 @@ function Get-PseSession {
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
     try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
-        [void](Send-PseCdp -Conn $conn -Method 'Runtime.enable')
-        [void](Send-PseCdp -Conn $conn -Method 'DOM.enable')
     } catch {
         Close-PseCdp -Conn $conn
         throw
@@ -328,14 +309,23 @@ function Invoke-PseInPage {
     return $response.result.value
 }
 
+function Get-PseLocation {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session
+    )
+
+    $json = Invoke-PseInPage -Session $Session -JsExpression '(function(){ return JSON.stringify({ url: document.URL, title: document.title }); })()'
+    return ($json | ConvertFrom-Json)
+}
+
 function Write-PseLocation {
     param(
         [Parameter(Mandatory = $true)]
         $Session
     )
 
-    $url = Invoke-PseInPage -Session $Session -JsExpression 'document.URL'
-    $title = Invoke-PseInPage -Session $Session -JsExpression 'document.title'
-    Write-Output "# url: $url"
-    Write-Output "# title: $title"
+    $location = Get-PseLocation -Session $Session
+    Write-Output "# url: $($location.url)"
+    Write-Output "# title: $($location.title)"
 }
