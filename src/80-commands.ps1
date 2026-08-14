@@ -57,6 +57,7 @@ function Invoke-PseHttpText {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -214,6 +215,7 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $oktaFastPassOrigin = Get-PseOptionValue -Parsed $Parsed -Name 'oktafastpassorigin' -Default $null
     $extraArg = @()
     if ($Parsed.Options.ContainsKey('extraarg')) {
         $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
@@ -232,7 +234,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg') -or $Parsed.Options.ContainsKey('oktafastpassorigin')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -252,7 +254,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir -OktaFastPassOrigin $oktaFastPassOrigin
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'

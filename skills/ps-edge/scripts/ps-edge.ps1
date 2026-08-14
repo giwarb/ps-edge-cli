@@ -98,6 +98,7 @@ function Invoke-PseHttpJson {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -143,6 +144,7 @@ function Connect-PseCdp {
     )
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
+    $socket.Options.Proxy = $null
     $cts = [System.Threading.CancellationTokenSource]::new()
     try {
         $cts.CancelAfter(30000)
@@ -422,8 +424,10 @@ function Get-PseEdgeLaunchArguments {
         $arguments += '--disable-renderer-backgrounding'
         $arguments += '--disable-search-engine-choice-screen'
         $arguments += '--disable-sync'
+        $arguments += '--deny-permission-prompts'
         $arguments += '--edge-skip-compat-layer-relaunch'
         $arguments += '--force-color-profile=srgb'
+        $arguments += '--hide-crash-restore-bubble'
         $arguments += '--metrics-recording-only'
         $arguments += '--no-service-autorun'
         $arguments += '--password-store=basic'
@@ -450,6 +454,156 @@ function Get-PseEdgeLaunchArguments {
     return $arguments
 }
 
+function Resolve-PseHttpsOrigin {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Origin
+    )
+
+    try {
+        $uri = New-Object System.Uri($Origin, [System.UriKind]::Absolute)
+    } catch {
+        throw "Okta FastPass origin must be an HTTPS origin such as https://tenant.okta.com: $Origin"
+    }
+
+    if ($uri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($uri.Host) -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        ($uri.AbsolutePath -ne '/' -and -not [string]::IsNullOrEmpty($uri.AbsolutePath)) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw "Okta FastPass origin must be an HTTPS origin such as https://tenant.okta.com: $Origin"
+    }
+
+    return $uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd('/')
+}
+
+function Get-PseJsonObjectChild {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Parent,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $Parent.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        $child = [pscustomobject]@{}
+        Add-Member -InputObject $Parent -MemberType NoteProperty -Name $Name -Value $child
+        return $child
+    }
+
+    if (-not ($property.Value -is [System.Management.Automation.PSCustomObject])) {
+        throw "profile preference '$Name' is not a JSON object"
+    }
+    return $property.Value
+}
+
+function Initialize-PseOktaFastPassProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$UserDataDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Origin
+    )
+
+    $normalizedOrigin = Resolve-PseHttpsOrigin -Origin $Origin
+    $profileDir = Join-Path $UserDataDir 'Default'
+    if (-not (Test-Path -LiteralPath $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir | Out-Null
+    }
+
+    $preferencesPath = Join-Path $profileDir 'Preferences'
+    $preferences = [pscustomobject]@{}
+    if (Test-Path -LiteralPath $preferencesPath) {
+        try {
+            $preferences = Get-Content -LiteralPath $preferencesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        } catch {
+            throw "could not read Edge profile preferences at '$preferencesPath': $($_.Exception.Message)"
+        }
+        if (-not ($preferences -is [System.Management.Automation.PSCustomObject])) {
+            throw "Edge profile preferences at '$preferencesPath' are not a JSON object"
+        }
+    }
+
+    $protocolHandler = Get-PseJsonObjectChild -Parent $preferences -Name 'protocol_handler'
+    $allowedPairs = Get-PseJsonObjectChild -Parent $protocolHandler -Name 'allowed_origin_protocol_pairs'
+    $originProtocols = Get-PseJsonObjectChild -Parent $allowedPairs -Name $normalizedOrigin
+    foreach ($scheme in @('com-okta-authenticator', 'okta-verify', 'com.okta.mobile')) {
+        Add-Member -InputObject $originProtocols -MemberType NoteProperty -Name $scheme -Value $true -Force
+    }
+
+    $temporaryPath = "$preferencesPath.pse-$PID"
+    try {
+        $json = $preferences | ConvertTo-Json -Depth 100
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($temporaryPath, $json, $encoding)
+        Move-Item -LiteralPath $temporaryPath -Destination $preferencesPath -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $normalizedOrigin
+}
+
+function Set-PseOriginPermissions {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Origin,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$PermissionNames
+    )
+
+    if ($null -eq $Version -or -not $Version.webSocketDebuggerUrl) {
+        throw 'browser WebSocket URL was not available'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $Version.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Browser.grantPermissions' -Params @{
+            permissions = @($PermissionNames)
+            origin = $Origin
+        } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
+function Navigate-PseInitialUrl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
+
+    $target = @(Get-PseTargets -Port $Port) | Select-Object -First 1
+    if ($null -eq $target -or -not $target.webSocketDebuggerUrl) {
+        throw 'no page target was available for the initial URL'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $target.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Page.navigate' -Params @{ url = $Url } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
 function Start-PseBrowser {
     param(
         [int]$Port = 9222,
@@ -464,7 +618,9 @@ function Start-PseBrowser {
 
         [string]$UserDataDir,
 
-        [string]$DownloadDir
+        [string]$DownloadDir,
+
+        [string]$OktaFastPassOrigin
     )
 
     try {
@@ -483,6 +639,11 @@ function Start-PseBrowser {
         New-Item -ItemType Directory -Path $UserDataDir | Out-Null
     }
 
+    $normalizedOktaOrigin = $null
+    if (-not [string]::IsNullOrWhiteSpace($OktaFastPassOrigin)) {
+        $normalizedOktaOrigin = Initialize-PseOktaFastPassProfile -UserDataDir $UserDataDir -Origin $OktaFastPassOrigin
+    }
+
     if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
         $DownloadDir = Join-Path (Get-PseStateDir) "downloads-$Port"
     }
@@ -492,19 +653,28 @@ function Start-PseBrowser {
     }
 
     $edgePath = Get-PseEdgePath
-    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $Url
+    $launchUrl = $Url
+    if ($null -ne $normalizedOktaOrigin -and $Url -ne 'about:blank') {
+        $launchUrl = 'about:blank'
+    }
+    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $launchUrl
 
     $process = Start-Process -FilePath $edgePath -ArgumentList $arguments -PassThru
     $version = $null
+    $lastEndpointError = $null
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
 
     while ([DateTime]::UtcNow -lt $deadline) {
+        if ($process.HasExited) {
+            throw "Edge exited before opening the CDP endpoint on port $Port (exit code $($process.ExitCode))."
+        }
         try {
             $version = Invoke-PseHttpJson -Port $Port -Path '/json/version'
             if ($null -ne $version) {
                 break
             }
         } catch {
+            $lastEndpointError = $_.Exception.Message
         }
         Start-Sleep -Milliseconds 250
     }
@@ -516,7 +686,25 @@ function Start-PseBrowser {
             }
         } catch {
         }
-        throw "Edge did not start a CDP endpoint on port $Port within 15 seconds."
+        $detail = ''
+        if (-not [string]::IsNullOrWhiteSpace($lastEndpointError)) {
+            $detail = " Last endpoint error: $lastEndpointError"
+        }
+        throw "Edge did not start a CDP endpoint on port $Port within 15 seconds.$detail"
+    }
+
+    if ($null -ne $normalizedOktaOrigin) {
+        try {
+            Set-PseOriginPermissions -Version $version -Origin $normalizedOktaOrigin -PermissionNames @('localNetwork', 'localNetworkAccess', 'loopbackNetwork')
+            if ($Url -ne 'about:blank') {
+                Navigate-PseInitialUrl -Port $Port -Url $Url
+            }
+        } catch {
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            throw "could not configure Okta FastPass for '$normalizedOktaOrigin': $($_.Exception.Message)"
+        }
     }
 
     Write-PseState @{
@@ -526,6 +714,7 @@ function Start-PseBrowser {
         targetId = $null
         attached = $false
         downloadDir = $DownloadDir
+        oktaFastPassOrigin = $normalizedOktaOrigin
     }
 
     $downloadWarning = $false
@@ -2229,6 +2418,7 @@ function Invoke-PseHttpText {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -2386,6 +2576,7 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $oktaFastPassOrigin = Get-PseOptionValue -Parsed $Parsed -Name 'oktafastpassorigin' -Default $null
     $extraArg = @()
     if ($Parsed.Options.ContainsKey('extraarg')) {
         $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
@@ -2404,7 +2595,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg') -or $Parsed.Options.ContainsKey('oktafastpassorigin')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -2424,7 +2615,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir -OktaFastPassOrigin $oktaFastPassOrigin
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'
@@ -3438,7 +3629,7 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]
   start -Attach [-Port 9222]
   stop
   status

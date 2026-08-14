@@ -11,6 +11,7 @@ function Invoke-PseHttpJson {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -56,6 +57,7 @@ function Connect-PseCdp {
     )
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
+    $socket.Options.Proxy = $null
     $cts = [System.Threading.CancellationTokenSource]::new()
     try {
         $cts.CancelAfter(30000)

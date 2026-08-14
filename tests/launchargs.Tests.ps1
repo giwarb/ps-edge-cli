@@ -31,6 +31,8 @@ $defaultArgs = @(Get-PseEdgeLaunchArguments -Port 9333 -UserDataDir 'C:\Temp\pse
 Assert-PseTrue ($defaultArgs[0] -eq '--remote-debugging-port=9333') "Expected first argument to be the debugging port, got '$($defaultArgs[0])'."
 Assert-PseTrue ($defaultArgs -contains '--disable-sync') 'Default arguments did not contain --disable-sync.'
 Assert-PseTrue ($defaultArgs -contains '--no-first-run') 'Default arguments did not contain --no-first-run.'
+Assert-PseTrue ($defaultArgs -contains '--deny-permission-prompts') 'Default arguments did not contain --deny-permission-prompts.'
+Assert-PseTrue ($defaultArgs -contains '--hide-crash-restore-bubble') 'Default arguments did not contain --hide-crash-restore-bubble.'
 Assert-PseTrue ($defaultArgs[$defaultArgs.Count - 1] -eq 'https://example.test/') "Expected URL to be last, got '$($defaultArgs[$defaultArgs.Count - 1])'."
 
 $defaultDisableFeatures = @(Get-PseDisableFeaturesArguments -Arguments $defaultArgs)
@@ -41,6 +43,8 @@ $minimalArgs = @(Get-PseEdgeLaunchArguments -Port 9334 -UserDataDir 'C:\Temp\pse
 Assert-PseTrue ($minimalArgs -contains '--no-first-run') '-NoQuietFlags arguments did not contain --no-first-run.'
 Assert-PseTrue ($minimalArgs -contains '--no-default-browser-check') '-NoQuietFlags arguments did not contain --no-default-browser-check.'
 Assert-PseTrue (-not ($minimalArgs -contains '--disable-sync')) '-NoQuietFlags arguments unexpectedly contained --disable-sync.'
+Assert-PseTrue (-not ($minimalArgs -contains '--deny-permission-prompts')) '-NoQuietFlags arguments unexpectedly contained --deny-permission-prompts.'
+Assert-PseTrue (-not ($minimalArgs -contains '--hide-crash-restore-bubble')) '-NoQuietFlags arguments unexpectedly contained --hide-crash-restore-bubble.'
 Assert-PseTrue (@(Get-PseDisableFeaturesArguments -Arguments $minimalArgs).Count -eq 0) '-NoQuietFlags arguments unexpectedly contained --disable-features.'
 
 $headlessArgs = @(Get-PseEdgeLaunchArguments -Port 9335 -UserDataDir 'C:\Temp\pse-profile' -Headless)

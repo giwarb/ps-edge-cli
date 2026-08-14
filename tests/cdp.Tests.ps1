@@ -31,9 +31,14 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ps-edge-cdp-test-' + [
 $conn = $null
 $edgePid = $null
 $step = 'starting browser'
+$originalProxy = [System.Net.WebRequest]::DefaultWebProxy
 
 try {
-    $version = Start-PseBrowser -Port $port -Headless -UserDataDir $testRoot
+    $blockingProxy = New-Object System.Net.WebProxy('http://127.0.0.1:1', $false)
+    $blockingProxy.BypassProxyOnLocal = $false
+    [System.Net.WebRequest]::DefaultWebProxy = $blockingProxy
+
+    $version = Start-PseBrowser -Port $port -Headless -UserDataDir $testRoot -OktaFastPassOrigin 'https://tenant.okta.com'
     $state = Read-PseState
     if ($null -ne $state) {
         $edgePid = $state.pid
@@ -43,6 +48,18 @@ try {
     $httpVersion = Invoke-PseHttpJson -Port $port -Path '/json/version'
     if ($null -eq $httpVersion -or $httpVersion.Browser -notmatch 'Edg') {
         throw "Expected /json/version Browser to contain Edg, got '$($httpVersion.Browser)'."
+    }
+    if ($state.oktaFastPassOrigin -ne 'https://tenant.okta.com') {
+        throw "Expected normalized Okta origin in state, got '$($state.oktaFastPassOrigin)'."
+    }
+    $preferences = Get-Content -LiteralPath (Join-Path $testRoot 'Default\Preferences') -Raw | ConvertFrom-Json
+    $oktaProtocols = $preferences.protocol_handler.allowed_origin_protocol_pairs.'https://tenant.okta.com'
+    if (-not $oktaProtocols.'com-okta-authenticator' -or -not $oktaProtocols.'okta-verify' -or -not $oktaProtocols.'com.okta.mobile') {
+        throw 'Expected Okta protocol allow-list entries in the isolated profile.'
+    }
+    $httpText = Invoke-PseHttpText -Port $port -Path '/json/version'
+    if ($httpText -notmatch '"Browser"') {
+        throw 'Expected Invoke-PseHttpText to bypass the blocking default proxy.'
     }
 
     $step = 'listing page targets'
@@ -98,6 +115,7 @@ try {
 } catch {
     throw "Integration step '$step' failed: $($_.Exception.Message)"
 } finally {
+    [System.Net.WebRequest]::DefaultWebProxy = $originalProxy
     if ($null -ne $conn) {
         Close-PseCdp -Conn $conn
     }

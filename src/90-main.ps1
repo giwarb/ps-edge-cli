@@ -67,7 +67,7 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]
   start -Attach [-Port 9222]
   stop
   status

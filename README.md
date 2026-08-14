@@ -43,7 +43,7 @@ Stopped.
 
 | Command | Syntax | Notes |
 |---|---|---|
-| `start` | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Edge を remote debugging port 付きで起動し、状態を保存します。`-Attach` は既存の CDP endpoint に接続します。 |
+| `start` | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` | Edge を remote debugging port 付きで起動し、状態を保存します。通常は welcome、crash restore、permission prompt を表示しません。`-OktaFastPassOrigin` は exact HTTPS origin に限り、isolated profile 内で Okta protocol と local/loopback network を許可します。registry は変更しません。`-Attach` は既存の CDP endpoint に接続します。 |
 | `stop` | `stop` | CDP の `Browser.close` を試し、必要なら PID を停止し、状態を消します。 |
 | `status` | `status` | port、pid、version、tabs を表示します。未起動なら `Not running.` を表示します。 |
 | `downloads` | `downloads [-Dir <path>]` | 設定済み、または指定した download dir のファイルを新しい順に表示します。 |
@@ -87,6 +87,10 @@ Claude Code などのエージェントには、スキル [skills/ps-edge/SKILL.
 ref は `inspect` または `snapshot` 実行時にページ内へ保存されます。ページ遷移で ref はリセットされるため、古い `e1` や `e2` を使い回さないでください。ref が見つからないエラーが出たら、再度 `inspect` または `snapshot` を実行します。
 
 PowerShell 上ではスクリプトを `& .\skills\ps-edge\scripts\ps-edge.ps1 inspect` のように直接呼び出してください。すでに PowerShell を実行しているのに、各操作でさらに `powershell.exe -File ...` を起動すると不要なプロセス起動時間が加わります。
+
+起動時はまず `status` を1回実行し、`Not running.` の場合は通常の `start` を使います。`start -Attach` は、通常のEdgeが開いているという意味ではありません。`--remote-debugging-port` と専用 `--user-data-dir` を付けて手動起動したEdgeにだけ使用してください。CDPのHTTP/WebSocket通信は管理プロキシを経由せず、常に `127.0.0.1` へ直接接続します。
+
+Okta FastPass を使う場合は、たとえば `start -OktaFastPassOrigin https://tenant.okta.com` としてから対象ページへ移動します。外部アプリの自動起動を全サイトへ許可するのは危険なため、この許可はデフォルトではなく指定した exact origin だけに適用されます。既知の Okta protocol (`com-okta-authenticator`, `okta-verify`, `com.okta.mobile`) は専用 profile の `Preferences` に保存され、Local Network Access はその browser process の CDP permission として付与されます。
 
 ## Development
 

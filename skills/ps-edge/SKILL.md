@@ -22,7 +22,8 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 ## The golden loop
 
-1. `start -Headless` once per session (add `-Port <n>` if 9222 is taken).
+1. Run `status` once. If it says `Not running.`, run `start` once (add `-Headless`
+   only when no human login or visual takeover is needed).
 2. `goto <url>`
 3. For forms, run `inspect`; use `snapshot` only when you need surrounding page text.
 4. Put related known operations in one `batch -Json '[...]'`, with a final verification
@@ -40,7 +41,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 
 | Goal | Command |
 |---|---|
-| Launch browser | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` |
+| Launch browser | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` |
 | Shut down | `stop` — Check liveness: `status` |
 | Downloads | `downloads [-Dir <path>]` |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
@@ -110,6 +111,9 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
 | `Error: invalid selector ...` from `inspect` | Fix or narrow the CSS selector. A no-match selector is also an explicit error. |
 | `Error: browser is not running - run 'start' first` | Run `start -Headless` (state lives in `%TEMP%\ps-edge\state.json`). |
 | `port 9222 is already in use` | Another session owns it: `stop` first, or use `start -Port <other>`. |
+| `no CDP endpoint ... launch Edge first` from `start -Attach` | A normal running Edge is not attachable. Use plain `start`, or manually launch a separate Edge with both `--remote-debugging-port=9222` and a dedicated `--user-data-dir`, then attach. |
+| `Edge did not start a CDP endpoint...` | Do not retry with certificate flags or random ports: page TLS does not control the local CDP endpoint. Read the appended endpoint/process error and fix that cause. |
+| Okta FastPass shows an external-app or Local Network Access prompt | Restart the isolated browser with `start -OktaFastPassOrigin https://<tenant>.okta.com`, using the exact HTTPS origin shown in the login URL. Do not use a wildcard or disable Local Network Access globally. |
 | `# warning: load event not fired within 30s` | Page is slow/SPA; it may still be usable — `snapshot` and check, or `wait -Text <expected>`. |
 | `[snapshot truncated at <n> chars - narrow with -Selector <css> or raise -MaxChars]` | Re-run `snapshot -Selector "<specific container>"`; only raise `-MaxChars` when broad page context is truly needed. |
 | Click had no visible effect | `snapshot` again (DOM may have changed), check `console` for JS errors, or try `eval` on the element directly. |
@@ -133,13 +137,20 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   ports share that single state file — avoid concurrent sessions.
 - `start` without `-Headless` opens a visible window — useful when a human wants to
   watch or take over.
-- Quiet launch flags are on by default: no sync/sign-in prompts, no extension
-  dialogs, and extensions are disabled. Use `-NoQuietFlags` when you need
+- Quiet launch flags are on by default: welcome/default-browser/crash-restore UI is
+  suppressed, browser permission requests are denied instead of displayed, sync/sign-in
+  prompts and extension dialogs are disabled. Use `-NoQuietFlags` when you need
   extensions or Edge's stock behavior; use repeated `-ExtraArg <arg>` to pass raw
   Chromium switches.
+- For Okta FastPass, start with the exact tenant origin, for example
+  `start -OktaFastPassOrigin https://tenant.okta.com`. This allows known Okta external
+  protocols in the isolated profile and grants local/loopback network access only to
+  that origin. It never writes global Edge policies; never replace the origin with a
+  wildcard.
 - To use a logged-in real profile, manually launch Edge first with
-  `msedge.exe --remote-debugging-port=9222`, then run `start -Attach`; `stop` only
-  detaches and leaves that browser running.
+  `msedge.exe --remote-debugging-port=9222 --user-data-dir=C:\path\to\debug-profile`,
+  then run `start -Attach`; `stop` only detaches and leaves that browser running.
+  Do not try `start -Attach` merely because ordinary Edge windows are already open.
 - For report downloads, use `start -DownloadDir <path>` or the default state download
   directory, then run `downloads` to list completed and in-progress files.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after

@@ -70,7 +70,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 
 | Command | Syntax | Implementation notes |
 |---|---|---|
-| start | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. Quiet flags are enabled by default; `-NoQuietFlags` restores the minimal launch flags, and repeated `-ExtraArg <arg>` passes raw Chromium switches. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
+| start | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. Quiet flags are enabled by default; browser permission prompts are denied instead of displayed and crash-restore UI is hidden. `-NoQuietFlags` restores the minimal launch flags, and repeated `-ExtraArg <arg>` passes raw Chromium switches. `-OktaFastPassOrigin` pre-allows known Okta external protocols in the isolated profile and grants local/loopback network permissions through CDP for one exact HTTPS origin. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
 | stop | `stop` | `Browser.close` via CDP, fallback kill PID, clear state. |
 | status | `status` | Show port/pid/version/tabs, or "not running". |
 | downloads | `downloads [-Dir <path>]` | List files in the configured download directory (or explicit `-Dir`), newest first, marking partial downloads. |
@@ -138,6 +138,9 @@ Rules:
 
 ## CDP client rules (PowerShell 5.1)
 
+- All CDP discovery HTTP requests and WebSocket connections explicitly disable proxies.
+  The endpoint is loopback-only; routing it through an enterprise proxy can return a
+  block page instead of `/json/version` and makes a healthy Edge look unavailable.
 - Sync-over-async: `.GetAwaiter().GetResult()` with `CancellationTokenSource` timeouts.
 - Receive loop: 64KB buffer into MemoryStream until `EndOfMessage` (screenshot payloads
   are multi-MB), UTF-8 decode, `ConvertFrom-Json`.
@@ -145,6 +148,20 @@ Rules:
   connection object for `Wait-PseCdpEvent`.
 - `ConvertTo-Json -Depth 12 -Compress` for outbound payloads.
 - No PS7-only syntax: no `&&`/`||`, no ternary, no `??`, no `?.`.
+
+## Browser prompt policy
+
+- Default quiet startup uses Chromium's `--deny-permission-prompts` and
+  `--hide-crash-restore-bubble` in addition to the existing first-run, default-browser,
+  sync/sign-in, extension, and infobar suppression. `-NoQuietFlags` disables these
+  optional quiet switches.
+- External application launch is never globally allowed. `-OktaFastPassOrigin` requires
+  an exact HTTPS origin, merges only known Okta schemes into
+  `Default\Preferences`, and preserves existing profile preferences.
+- The same option grants `localNetwork`, `localNetworkAccess`, and `loopbackNetwork` for
+  that origin with `Browser.grantPermissions` before navigating the requested initial URL.
+  It does not modify HKCU/HKLM Edge policies or weaken Local Network Access for other
+  origins.
 
 ## Testing
 
