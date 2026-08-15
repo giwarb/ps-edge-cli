@@ -11,7 +11,9 @@ Generation source list:
 - src/40-browser.ps1
 - src/50-session.ps1
 - src/60-snapshot.ps1
+- src/65-inspect.ps1
 - src/70-actions.ps1
+- src/75-batch.ps1
 - src/80-commands.ps1
 - src/90-main.ps1
 - ps-edge.ps1 (outside #region PSE-SOURCES)
@@ -96,6 +98,7 @@ function Invoke-PseHttpJson {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -141,6 +144,7 @@ function Connect-PseCdp {
     )
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
+    $socket.Options.Proxy = $null
     $cts = [System.Threading.CancellationTokenSource]::new()
     try {
         $cts.CancelAfter(30000)
@@ -420,8 +424,10 @@ function Get-PseEdgeLaunchArguments {
         $arguments += '--disable-renderer-backgrounding'
         $arguments += '--disable-search-engine-choice-screen'
         $arguments += '--disable-sync'
+        $arguments += '--deny-permission-prompts'
         $arguments += '--edge-skip-compat-layer-relaunch'
         $arguments += '--force-color-profile=srgb'
+        $arguments += '--hide-crash-restore-bubble'
         $arguments += '--metrics-recording-only'
         $arguments += '--no-service-autorun'
         $arguments += '--password-store=basic'
@@ -448,6 +454,156 @@ function Get-PseEdgeLaunchArguments {
     return $arguments
 }
 
+function Resolve-PseHttpsOrigin {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Origin
+    )
+
+    try {
+        $uri = New-Object System.Uri($Origin, [System.UriKind]::Absolute)
+    } catch {
+        throw "Okta FastPass origin must be an HTTPS origin such as https://tenant.okta.com: $Origin"
+    }
+
+    if ($uri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($uri.Host) -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        ($uri.AbsolutePath -ne '/' -and -not [string]::IsNullOrEmpty($uri.AbsolutePath)) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw "Okta FastPass origin must be an HTTPS origin such as https://tenant.okta.com: $Origin"
+    }
+
+    return $uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd('/')
+}
+
+function Get-PseJsonObjectChild {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Parent,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $Parent.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        $child = [pscustomobject]@{}
+        Add-Member -InputObject $Parent -MemberType NoteProperty -Name $Name -Value $child
+        return $child
+    }
+
+    if (-not ($property.Value -is [System.Management.Automation.PSCustomObject])) {
+        throw "profile preference '$Name' is not a JSON object"
+    }
+    return $property.Value
+}
+
+function Initialize-PseOktaFastPassProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$UserDataDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Origin
+    )
+
+    $normalizedOrigin = Resolve-PseHttpsOrigin -Origin $Origin
+    $profileDir = Join-Path $UserDataDir 'Default'
+    if (-not (Test-Path -LiteralPath $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir | Out-Null
+    }
+
+    $preferencesPath = Join-Path $profileDir 'Preferences'
+    $preferences = [pscustomobject]@{}
+    if (Test-Path -LiteralPath $preferencesPath) {
+        try {
+            $preferences = Get-Content -LiteralPath $preferencesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        } catch {
+            throw "could not read Edge profile preferences at '$preferencesPath': $($_.Exception.Message)"
+        }
+        if (-not ($preferences -is [System.Management.Automation.PSCustomObject])) {
+            throw "Edge profile preferences at '$preferencesPath' are not a JSON object"
+        }
+    }
+
+    $protocolHandler = Get-PseJsonObjectChild -Parent $preferences -Name 'protocol_handler'
+    $allowedPairs = Get-PseJsonObjectChild -Parent $protocolHandler -Name 'allowed_origin_protocol_pairs'
+    $originProtocols = Get-PseJsonObjectChild -Parent $allowedPairs -Name $normalizedOrigin
+    foreach ($scheme in @('com-okta-authenticator', 'okta-verify', 'com.okta.mobile')) {
+        Add-Member -InputObject $originProtocols -MemberType NoteProperty -Name $scheme -Value $true -Force
+    }
+
+    $temporaryPath = "$preferencesPath.pse-$PID"
+    try {
+        $json = $preferences | ConvertTo-Json -Depth 100
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($temporaryPath, $json, $encoding)
+        Move-Item -LiteralPath $temporaryPath -Destination $preferencesPath -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $normalizedOrigin
+}
+
+function Set-PseOriginPermissions {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Origin,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$PermissionNames
+    )
+
+    if ($null -eq $Version -or -not $Version.webSocketDebuggerUrl) {
+        throw 'browser WebSocket URL was not available'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $Version.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Browser.grantPermissions' -Params @{
+            permissions = @($PermissionNames)
+            origin = $Origin
+        } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
+function Navigate-PseInitialUrl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
+
+    $target = @(Get-PseTargets -Port $Port) | Select-Object -First 1
+    if ($null -eq $target -or -not $target.webSocketDebuggerUrl) {
+        throw 'no page target was available for the initial URL'
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $target.webSocketDebuggerUrl
+        [void](Send-PseCdp -Conn $conn -Method 'Page.navigate' -Params @{ url = $Url } -TimeoutSec 5)
+    } finally {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+    }
+}
+
 function Start-PseBrowser {
     param(
         [int]$Port = 9222,
@@ -462,7 +618,9 @@ function Start-PseBrowser {
 
         [string]$UserDataDir,
 
-        [string]$DownloadDir
+        [string]$DownloadDir,
+
+        [string]$OktaFastPassOrigin
     )
 
     try {
@@ -481,6 +639,11 @@ function Start-PseBrowser {
         New-Item -ItemType Directory -Path $UserDataDir | Out-Null
     }
 
+    $normalizedOktaOrigin = $null
+    if (-not [string]::IsNullOrWhiteSpace($OktaFastPassOrigin)) {
+        $normalizedOktaOrigin = Initialize-PseOktaFastPassProfile -UserDataDir $UserDataDir -Origin $OktaFastPassOrigin
+    }
+
     if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
         $DownloadDir = Join-Path (Get-PseStateDir) "downloads-$Port"
     }
@@ -490,19 +653,28 @@ function Start-PseBrowser {
     }
 
     $edgePath = Get-PseEdgePath
-    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $Url
+    $launchUrl = $Url
+    if ($null -ne $normalizedOktaOrigin -and $Url -ne 'about:blank') {
+        $launchUrl = 'about:blank'
+    }
+    $arguments = Get-PseEdgeLaunchArguments -Port $Port -UserDataDir $UserDataDir -Headless:$Headless -NoQuietFlags:$NoQuietFlags -ExtraArg $ExtraArg -Url $launchUrl
 
     $process = Start-Process -FilePath $edgePath -ArgumentList $arguments -PassThru
     $version = $null
+    $lastEndpointError = $null
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
 
     while ([DateTime]::UtcNow -lt $deadline) {
+        if ($process.HasExited) {
+            throw "Edge exited before opening the CDP endpoint on port $Port (exit code $($process.ExitCode))."
+        }
         try {
             $version = Invoke-PseHttpJson -Port $Port -Path '/json/version'
             if ($null -ne $version) {
                 break
             }
         } catch {
+            $lastEndpointError = $_.Exception.Message
         }
         Start-Sleep -Milliseconds 250
     }
@@ -514,7 +686,25 @@ function Start-PseBrowser {
             }
         } catch {
         }
-        throw "Edge did not start a CDP endpoint on port $Port within 15 seconds."
+        $detail = ''
+        if (-not [string]::IsNullOrWhiteSpace($lastEndpointError)) {
+            $detail = " Last endpoint error: $lastEndpointError"
+        }
+        throw "Edge did not start a CDP endpoint on port $Port within 15 seconds.$detail"
+    }
+
+    if ($null -ne $normalizedOktaOrigin) {
+        try {
+            Set-PseOriginPermissions -Version $version -Origin $normalizedOktaOrigin -PermissionNames @('localNetwork', 'localNetworkAccess', 'loopbackNetwork')
+            if ($Url -ne 'about:blank') {
+                Navigate-PseInitialUrl -Port $Port -Url $Url
+            }
+        } catch {
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            throw "could not configure Okta FastPass for '$normalizedOktaOrigin': $($_.Exception.Message)"
+        }
     }
 
     Write-PseState @{
@@ -524,6 +714,7 @@ function Start-PseBrowser {
         targetId = $null
         attached = $false
         downloadDir = $DownloadDir
+        oktaFastPassOrigin = $normalizedOktaOrigin
     }
 
     $downloadWarning = $false
@@ -832,28 +1023,12 @@ function Install-PseConsoleHook {
         $State
     )
 
-    $known = @()
-    if ($null -ne $State.PSObject.Properties['consoleHookTargetIds']) {
-        $known = @($State.consoleHookTargetIds | ForEach-Object { [string]$_ })
-    }
+    $policyJson = ConvertTo-PseJson (Get-PseDialogPolicy -State $State)
+    $script = (Get-PsePageHookJs) + "`nwindow.__pseDialogPolicy = $policyJson;"
 
-    $script = Get-PsePageHookJs
-    if ($known -notcontains [string]$Session.TargetId) {
-        [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
-        $newState = ConvertTo-PseStateHashtable -State $State
-        $newKnown = New-Object System.Collections.ArrayList
-        foreach ($id in $known) {
-            if (-not [string]::IsNullOrWhiteSpace($id)) {
-                [void]$newKnown.Add($id)
-            }
-        }
-        [void]$newKnown.Add([string]$Session.TargetId)
-        $newState.consoleHookTargetIds = @($newKnown | ForEach-Object { $_ })
-        Write-PseState $newState
-    }
-
+    # CDP new-document registrations belong to the current connection.
+    [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.addScriptToEvaluateOnNewDocument' -Params @{ source = $script })
     [void](Invoke-PseInPage -Session $Session -JsExpression $script)
-    Set-PseDialogPolicyInPage -Session $Session -Policy (Get-PseDialogPolicy -State $State)
 }
 
 function Get-PseSession {
@@ -867,7 +1042,6 @@ function Get-PseSession {
     }
 
     try {
-        [void](Invoke-PseHttpJson -Port ([int]$state.port) -Path '/json/version')
         $targets = @(Get-PseTargets -Port ([int]$state.port))
     } catch {
         throw "browser is not running - run 'start' first"
@@ -901,8 +1075,6 @@ function Get-PseSession {
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
     try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
-        [void](Send-PseCdp -Conn $conn -Method 'Runtime.enable')
-        [void](Send-PseCdp -Conn $conn -Method 'DOM.enable')
     } catch {
         Close-PseCdp -Conn $conn
         throw
@@ -968,23 +1140,34 @@ function Invoke-PseInPage {
     return $response.result.value
 }
 
+function Get-PseLocation {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session
+    )
+
+    $json = Invoke-PseInPage -Session $Session -JsExpression '(function(){ return JSON.stringify({ url: document.URL, title: document.title }); })()'
+    return ($json | ConvertFrom-Json)
+}
+
 function Write-PseLocation {
     param(
         [Parameter(Mandatory = $true)]
         $Session
     )
 
-    $url = Invoke-PseInPage -Session $Session -JsExpression 'document.URL'
-    $title = Invoke-PseInPage -Session $Session -JsExpression 'document.title'
-    Write-Output "# url: $url"
-    Write-Output "# title: $title"
+    $location = Get-PseLocation -Session $Session
+    Write-Output "# url: $($location.url)"
+    Write-Output "# title: $($location.title)"
 }
 
 # Source: src/60-snapshot.ps1
 function Get-PseSnapshotJs {
     param(
         [AllowNull()]
-        [string]$Selector
+        [string]$Selector,
+
+        [int]$MaxChars = 0
     )
 
     $selectorJson = 'null'
@@ -995,10 +1178,27 @@ function Get-PseSnapshotJs {
     $js = @'
 (function() {
   var selector = __PSE_SELECTOR__;
+  var maxChars = __PSE_MAX_CHARS__;
   var noMatchPrefix = "\u0000PSE_NO_MATCH\u0000";
   var lines = [];
+  var outputChars = 0;
+  var truncated = false;
   var refCounter = 1;
   window.__pseRefs = {};
+
+  function emit(line) {
+    if (truncated) {
+      return false;
+    }
+    var added = String(line).length + (lines.length > 0 ? 1 : 0);
+    lines.push(String(line));
+    outputChars += added;
+    if (maxChars > 0 && outputChars > maxChars) {
+      truncated = true;
+      return false;
+    }
+    return true;
+  }
 
   function clean(value) {
     if (value === null || value === undefined) {
@@ -1188,13 +1388,13 @@ function Get-PseSnapshotJs {
     try { if ((role === "checkbox" || role === "radio") && el.checked) { line += " [checked]"; } } catch (e2) {}
     try { if (el.disabled) { line += " [disabled]"; } } catch (e3) {}
     try { if (role === "option" && el.selected) { line += " [selected]"; } } catch (e4) {}
-    lines.push(line);
+    emit(line);
     return { emitted: true, role: role, name: name, usedInnerText: usedInnerText };
   }
 
   function walk(node, depth) {
     try {
-      if (!node) {
+      if (!node || truncated) {
         return;
       }
       if (node.nodeType === 3) {
@@ -1202,7 +1402,7 @@ function Get-PseSnapshotJs {
         if (parent && isTextContainer(parent) && !parent.__pseUsedInnerTextName) {
           var text = truncate(node.nodeValue, 200);
           if (text) {
-            lines.push(new Array(depth + 1).join("  ") + "- text: " + text);
+            emit(new Array(depth + 1).join("  ") + "- text: " + text);
           }
         }
         return;
@@ -1221,7 +1421,7 @@ function Get-PseSnapshotJs {
         childDepth = depth + 1;
       }
       var children = el.childNodes;
-      for (var i = 0; i < children.length; i++) {
+      for (var i = 0; i < children.length && !truncated; i++) {
         walk(children[i], childDepth);
       }
       try { delete el.__pseUsedInnerTextName; } catch (e2) {}
@@ -1241,13 +1441,196 @@ function Get-PseSnapshotJs {
     }
   }
 
-  lines.push("- document " + quote(truncate(document.title || "", 80)));
+  emit("- document " + quote(truncate(document.title || "", 80)));
   walk(root, 1);
   return lines.join("\n");
 })()
 '@
 
-    return $js.Replace('__PSE_SELECTOR__', $selectorJson)
+    return $js.Replace('__PSE_SELECTOR__', $selectorJson).Replace('__PSE_MAX_CHARS__', [string]$MaxChars)
+}
+
+function Get-PseSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [AllowNull()]
+        [string]$Selector,
+
+        [int]$MaxChars = 24000
+    )
+
+    if ($MaxChars -lt 0) {
+        throw '-MaxChars must be 0 or a positive integer'
+    }
+
+    $js = Get-PseSnapshotJs -Selector $Selector -MaxChars $MaxChars
+    $snapshot = Invoke-PseInPage -Session $Session -JsExpression $js
+    $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
+    if ($null -ne $snapshot -and ([string]$snapshot).StartsWith($noMatchPrefix)) {
+        throw "no element matches selector '$Selector'"
+    }
+    return Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $MaxChars
+}
+
+# Source: src/65-inspect.ps1
+function Get-PseInspectJs {
+    param(
+        [AllowNull()]
+        [string]$Selector,
+
+        [int]$MaxItems = 200
+    )
+
+    $selectorJson = 'null'
+    if ($PSBoundParameters.ContainsKey('Selector') -and $null -ne $Selector) {
+        $selectorJson = ConvertTo-PseJson $Selector
+    }
+
+    $js = @'
+(function() {
+  var selector = __PSE_SELECTOR__;
+  var maxItems = __PSE_MAX_ITEMS__;
+  var noMatchPrefix = "\u0000PSE_NO_MATCH\u0000";
+  var invalidPrefix = "\u0000PSE_INVALID_SELECTOR\u0000";
+  var root = document.body;
+  if (selector !== null && selector !== undefined && selector !== "") {
+    try {
+      root = document.querySelector(selector);
+    } catch (e) {
+      return invalidPrefix + selector;
+    }
+    if (!root) {
+      return noMatchPrefix + selector;
+    }
+  }
+
+  function clean(value) {
+    return value === null || value === undefined ? "" : String(value).replace(/\s+/g, " ").trim();
+  }
+  function tagName(el) {
+    return clean(el && el.tagName).toLowerCase();
+  }
+  function attr(el, name) {
+    try { return el.getAttribute(name); } catch (e) { return null; }
+  }
+  function visible(el) {
+    try {
+      var style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") { return false; }
+      var rect = el.getBoundingClientRect();
+      return rect.width !== 0 || rect.height !== 0;
+    } catch (e) {
+      return false;
+    }
+  }
+  function roleOf(el) {
+    var tag = tagName(el);
+    var role = clean(attr(el, "role")).toLowerCase();
+    var type = clean(attr(el, "type")).toLowerCase();
+    if (role) { return role; }
+    if (tag === "a" && attr(el, "href")) { return "link"; }
+    if (tag === "button" || (tag === "input" && /^(button|submit|reset)$/.test(type))) { return "button"; }
+    if (tag === "select") { return "combobox"; }
+    if (tag === "textarea" || (tag === "input" && !/^(button|submit|reset|checkbox|radio|file|hidden)$/.test(type))) { return "textbox"; }
+    if (tag === "input" && type === "checkbox") { return "checkbox"; }
+    if (tag === "input" && type === "radio") { return "radio"; }
+    if (tag === "input" && type === "file") { return "button"; }
+    return "interactive";
+  }
+  function labelOf(el) {
+    var value = clean(attr(el, "aria-label"));
+    if (!value && el.labels && el.labels.length) {
+      value = clean(Array.prototype.map.call(el.labels, function(label) {
+        return label.innerText || label.textContent;
+      }).join(" "));
+    }
+    if (!value) { value = clean(attr(el, "placeholder")); }
+    if (!value) { value = clean(attr(el, "alt")); }
+    if (!value) { value = clean(attr(el, "title")); }
+    if (!value && roleOf(el) === "button") { value = clean(el.value); }
+    if (!value) { value = clean(el.innerText || el.textContent); }
+    return value.length > 120 ? value.slice(0, 119) + "\u2026" : value;
+  }
+
+  var query = 'a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="textbox"],[role="checkbox"],[role="radio"],[tabindex],*[onclick]';
+  var candidates = [];
+  try {
+    if (root.matches && root.matches(query)) { candidates.push(root); }
+    candidates = candidates.concat(Array.prototype.slice.call(root.querySelectorAll(query)));
+  } catch (e) {
+    return invalidPrefix + (selector || "");
+  }
+
+  window.__pseRefs = {};
+  var items = [];
+  for (var i = 0; i < candidates.length; i++) {
+    if (maxItems > 0 && items.length >= maxItems) { break; }
+    var el = candidates[i];
+    if (!visible(el)) { continue; }
+    var ref = "e" + (items.length + 1);
+    window.__pseRefs[ref] = el;
+    var options = null;
+    if (tagName(el) === "select") {
+      options = Array.prototype.map.call(el.options, function(option) {
+        return {
+          value: String(option.value),
+          label: clean(option.label || option.text),
+          selected: !!option.selected
+        };
+      });
+    }
+    items.push({
+      ref: ref,
+      role: roleOf(el),
+      name: labelOf(el),
+      tag: tagName(el),
+      id: clean(el.id),
+      nameAttr: clean(attr(el, "name")),
+      type: clean(attr(el, "type")).toLowerCase(),
+      value: el.value === undefined || el.value === null ? "" : String(el.value),
+      checked: !!el.checked,
+      disabled: !!el.disabled,
+      options: options
+    });
+  }
+  return JSON.stringify(items);
+})()
+'@
+
+    return $js.Replace('__PSE_SELECTOR__', $selectorJson).Replace('__PSE_MAX_ITEMS__', [string]$MaxItems)
+}
+
+function Get-PseInspection {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [AllowNull()]
+        [string]$Selector,
+
+        [int]$MaxItems = 200
+    )
+
+    if ($MaxItems -lt 0) {
+        throw '-MaxItems must be 0 or a positive integer'
+    }
+
+    $js = Get-PseInspectJs -Selector $Selector -MaxItems $MaxItems
+    $json = [string](Invoke-PseInPage -Session $Session -JsExpression $js)
+    $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
+    $invalidPrefix = [string]([char]0) + 'PSE_INVALID_SELECTOR' + [string]([char]0)
+    if ($json.StartsWith($invalidPrefix)) {
+        throw "invalid selector '$Selector'"
+    }
+    if ($json.StartsWith($noMatchPrefix)) {
+        throw "no element matches selector '$Selector'"
+    }
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        return @()
+    }
+    return @($json | ConvertFrom-Json | ForEach-Object { $_ })
 }
 
 # Source: src/70-actions.ps1
@@ -1733,6 +2116,248 @@ function Test-PseWaitCondition {
     }
 }
 
+# Source: src/75-batch.ps1
+function Get-PseRequiredStepValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Step,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $Step.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        throw "missing '$Name'"
+    }
+    return $property.Value
+}
+
+function Get-PseOptionalStepValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Step,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        $Default
+    )
+
+    $property = $Step.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $Default
+    }
+    return $property.Value
+}
+
+function New-PseBatchStepValue {
+    param(
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        $Value
+    )
+
+    return [pscustomobject]@{ Value = $Value }
+}
+
+function Wait-PseCondition {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [AllowNull()]
+        [string]$Text,
+
+        [AllowNull()]
+        [string]$Gone,
+
+        [AllowNull()]
+        [string]$Selector,
+
+        [AllowNull()]
+        [string]$SelectorGone,
+
+        [int]$TimeoutSec = 30
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+    $lastFailed = $null
+    while ([DateTime]::UtcNow -le $deadline) {
+        $conditionParams = @{ Session = $Session }
+        if ($PSBoundParameters.ContainsKey('Text')) { $conditionParams.Text = $Text }
+        if ($PSBoundParameters.ContainsKey('Gone')) { $conditionParams.Gone = $Gone }
+        if ($PSBoundParameters.ContainsKey('Selector')) { $conditionParams.Selector = $Selector }
+        if ($PSBoundParameters.ContainsKey('SelectorGone')) { $conditionParams.SelectorGone = $SelectorGone }
+        $waitResult = Test-PseWaitCondition @conditionParams
+        if ($null -ne $waitResult.InvalidSelector) {
+            throw "invalid selector '$($waitResult.InvalidSelector)'"
+        }
+        if ($waitResult.Ok) {
+            return 'condition met'
+        }
+        $lastFailed = $waitResult.Failed
+        Start-Sleep -Milliseconds 500
+    }
+
+    $target = 'load state complete'
+    if (-not [string]::IsNullOrWhiteSpace([string]$lastFailed)) {
+        $target = [string]$lastFailed
+    }
+    throw "timeout waiting for $target"
+}
+
+function Invoke-PseBatchStep {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [Parameter(Mandatory = $true)]
+        $Step
+    )
+
+    $action = ([string](Get-PseRequiredStepValue -Step $Step -Name 'action')).ToLowerInvariant()
+    if ($action -eq 'eval') {
+        $expression = [string](Get-PseRequiredStepValue -Step $Step -Name 'expression')
+        $response = Send-PseCdp -Conn $Session.Conn -Method 'Runtime.evaluate' -Params @{
+            expression = $expression
+            returnByValue = $true
+            awaitPromise = $true
+            userGesture = $true
+        }
+        if ($null -ne $response.PSObject.Properties['exceptionDetails']) {
+            $details = $response.exceptionDetails
+            if ($null -ne $details.exception -and $details.exception.description) {
+                throw $details.exception.description
+            }
+            if ($details.text) { throw $details.text }
+            throw 'JavaScript evaluation failed'
+        }
+        $value = $null
+        if ($null -ne $response.result -and $null -ne $response.result.PSObject.Properties['value']) {
+            $value = $response.result.value
+        }
+        return (New-PseBatchStepValue -Value $value)
+    }
+    if ($action -eq 'snapshot') {
+        $selector = Get-PseOptionalStepValue -Step $Step -Name 'selector' -Default $null
+        $maxChars = [int](Get-PseOptionalStepValue -Step $Step -Name 'maxChars' -Default 24000)
+        return (New-PseBatchStepValue -Value (Get-PseSnapshot -Session $Session -Selector $selector -MaxChars $maxChars))
+    }
+    if ($action -eq 'inspect') {
+        $selector = Get-PseOptionalStepValue -Step $Step -Name 'selector' -Default $null
+        $maxItems = [int](Get-PseOptionalStepValue -Step $Step -Name 'maxItems' -Default 200)
+        $items = [object[]]@(Get-PseInspection -Session $Session -Selector $selector -MaxItems $maxItems)
+        return (New-PseBatchStepValue -Value $items)
+    }
+    if ($action -eq 'click') {
+        $ref = [string](Get-PseRequiredStepValue -Step $Step -Name 'ref')
+        $button = 'left'
+        if ([bool](Get-PseOptionalStepValue -Step $Step -Name 'right' -Default $false)) { $button = 'right' }
+        $clickCount = 1
+        if ([bool](Get-PseOptionalStepValue -Step $Step -Name 'double' -Default $false)) { $clickCount = 2 }
+        $rect = Resolve-PseRef -Session $Session -Ref $ref
+        Send-PseMouseClick -Session $Session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+        return (New-PseBatchStepValue -Value "clicked $ref")
+    }
+    if ($action -eq 'fill') {
+        $ref = [string](Get-PseRequiredStepValue -Step $Step -Name 'ref')
+        $value = [string](Get-PseRequiredStepValue -Step $Step -Name 'value')
+        Set-PseRefValue -Session $Session -Ref $ref -Value $value
+        return (New-PseBatchStepValue -Value "filled $ref")
+    }
+    if ($action -eq 'type') {
+        $ref = [string](Get-PseRequiredStepValue -Step $Step -Name 'ref')
+        $text = [string](Get-PseRequiredStepValue -Step $Step -Name 'text')
+        [void](Resolve-PseRef -Session $Session -Ref $ref)
+        Focus-PseRef -Session $Session -Ref $ref
+        [void](Send-PseCdp -Conn $Session.Conn -Method 'Input.insertText' -Params @{ text = $text })
+        if ([bool](Get-PseOptionalStepValue -Step $Step -Name 'submit' -Default $false)) {
+            Send-PseKey -Session $Session -KeySpec 'Enter'
+        }
+        return (New-PseBatchStepValue -Value "typed into $ref")
+    }
+    if ($action -eq 'press') {
+        $key = [string](Get-PseRequiredStepValue -Step $Step -Name 'key')
+        Send-PseKey -Session $Session -KeySpec $key
+        return (New-PseBatchStepValue -Value "pressed $key")
+    }
+    if ($action -eq 'select') {
+        $ref = [string](Get-PseRequiredStepValue -Step $Step -Name 'ref')
+        $rawValues = Get-PseRequiredStepValue -Step $Step -Name 'values'
+        $values = @($rawValues | ForEach-Object { [string]$_ })
+        if ($values.Count -eq 0) { throw "missing 'values'" }
+        $matched = [object[]]@(Select-PseRefOptions -Session $Session -Ref $ref -Values $values)
+        return (New-PseBatchStepValue -Value $matched)
+    }
+    if ($action -eq 'wait') {
+        $params = @{
+            Session = $Session
+            TimeoutSec = [int](Get-PseOptionalStepValue -Step $Step -Name 'timeoutSec' -Default 30)
+        }
+        foreach ($name in @('text', 'gone', 'selector', 'selectorGone')) {
+            $property = $Step.PSObject.Properties[$name]
+            if ($null -ne $property) { $params[$name] = [string]$property.Value }
+        }
+        return (New-PseBatchStepValue -Value (Wait-PseCondition @params))
+    }
+    if ($action -eq 'goto') {
+        $url = [string](Get-PseRequiredStepValue -Step $Step -Name 'url')
+        if ($url -notmatch '^[a-z][a-z0-9+.-]*:') { $url = "https://$url" }
+        $timeoutSec = [int](Get-PseOptionalStepValue -Step $Step -Name 'timeoutSec' -Default 30)
+        [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.navigate' -Params @{ url = $url })
+        $warnings = @(Wait-PseLoadEventOrWarn -Session $Session -TimeoutSec $timeoutSec)
+        return (New-PseBatchStepValue -Value ([pscustomobject]@{ url = $url; warnings = $warnings }))
+    }
+    if ($action -eq 'reload') {
+        $timeoutSec = [int](Get-PseOptionalStepValue -Step $Step -Name 'timeoutSec' -Default 30)
+        [void](Send-PseCdp -Conn $Session.Conn -Method 'Page.reload')
+        $warnings = @(Wait-PseLoadEventOrWarn -Session $Session -TimeoutSec $timeoutSec)
+        return (New-PseBatchStepValue -Value ([pscustomobject]@{ reloaded = $true; warnings = $warnings }))
+    }
+    throw "unknown action '$action'"
+}
+
+function Invoke-PseBatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Steps
+    )
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        $results = New-Object System.Collections.ArrayList
+        for ($i = 0; $i -lt $Steps.Count; $i++) {
+            $step = $Steps[$i]
+            $action = ''
+            if ($null -ne $step -and $null -ne $step.PSObject.Properties['action']) {
+                $action = [string]$step.action
+            }
+            try {
+                $stepValue = Invoke-PseBatchStep -Session $session -Step $step
+                [void]$results.Add([pscustomobject]@{
+                    index = $i
+                    action = $action
+                    result = $stepValue.Value
+                })
+            } catch {
+                throw "batch step $i ($action): $($_.Exception.Message)"
+            }
+        }
+        $location = Get-PseLocation -Session $session
+        return [pscustomobject]@{
+            ok = $true
+            steps = @($results | ForEach-Object { $_ })
+            url = $location.url
+            title = $location.title
+        }
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
+
 # Source: src/80-commands.ps1
 function Write-PseCliError {
     param(
@@ -1793,6 +2418,7 @@ function Invoke-PseHttpText {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -1864,7 +2490,6 @@ function Get-PseCurrentStateAndTargets {
     }
 
     try {
-        [void](Invoke-PseHttpJson -Port ([int]$state.port) -Path '/json/version')
         $targets = @(Get-PseTargets -Port ([int]$state.port))
         return [pscustomobject]@{
             State = $state
@@ -1951,6 +2576,7 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $oktaFastPassOrigin = Get-PseOptionValue -Parsed $Parsed -Name 'oktafastpassorigin' -Default $null
     $extraArg = @()
     if ($Parsed.Options.ContainsKey('extraarg')) {
         $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
@@ -1969,7 +2595,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg') -or $Parsed.Options.ContainsKey('oktafastpassorigin')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -1989,7 +2615,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir -OktaFastPassOrigin $oktaFastPassOrigin
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'
@@ -2187,15 +2813,42 @@ function Invoke-PseCmdSnapshot {
     $session = $null
     try {
         $session = Get-PseSession
-        $js = Get-PseSnapshotJs -Selector $selector
-        $snapshot = Invoke-PseInPage -Session $session -JsExpression $js
-        $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
-        if ($null -ne $snapshot -and ([string]$snapshot).StartsWith($noMatchPrefix)) {
-            Write-PseCliError "Error: no element matches selector '$selector'"
+        try {
+            Write-Output (Get-PseSnapshot -Session $session -Selector $selector -MaxChars $maxChars)
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
             return 1
         }
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
 
-        Write-Output (Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $maxChars)
+function Invoke-PseCmdInspect {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $maxItems = [int](Get-PseOptionValue -Parsed $Parsed -Name 'maxitems' -Default 200)
+    if ($maxItems -lt 0) {
+        Write-PseCliError 'Error: -MaxItems must be 0 or a positive integer'
+        return 1
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        try {
+            $items = @(Get-PseInspection -Session $session -Selector $selector -MaxItems $maxItems)
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
+        Write-Output (ConvertTo-PseJson -Object $items)
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -2364,6 +3017,42 @@ function Invoke-PseCmdEval {
         return 0
     } finally {
         Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdBatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $json = Get-PseOptionValue -Parsed $Parsed -Name 'json' -Default $null
+    if ($null -eq $json -or $json -is [bool] -or [string]::IsNullOrWhiteSpace([string]$json)) {
+        Write-PseCliError 'Error: batch requires -Json <json-array>'
+        return 1
+    }
+
+    $text = ([string]$json).Trim()
+    if (-not $text.StartsWith('[')) {
+        Write-PseCliError 'Error: batch JSON root must be an array'
+        return 1
+    }
+
+    try {
+        $parsedSteps = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-PseCliError "Error: invalid batch JSON: $($_.Exception.Message)"
+        return 1
+    }
+    $steps = @($parsedSteps | ForEach-Object { $_ })
+
+    try {
+        $result = Invoke-PseBatch -Steps $steps
+        Write-Output (ConvertTo-PseJson -Object $result)
+        return 0
+    } catch {
+        Write-PseCliError "Error: $($_.Exception.Message)"
+        return 1
     }
 }
 
@@ -2694,7 +3383,6 @@ function Invoke-PseCmdDialog {
         $session = $null
         try {
             $session = Get-PseSession
-            Set-PseDialogPolicyInPage -Session $session -Policy $policy
             Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
             return 0
         } finally {
@@ -2918,7 +3606,7 @@ function ConvertFrom-PseArgs {
                 }
             } elseif ($flags.ContainsKey($name)) {
                 $options[$name] = $true
-            } elseif (($i + 1) -lt $Args.Count -and ([string]$Args[$i + 1]) -notmatch '^-') {
+            } elseif (($i + 1) -lt $Args.Count -and (([string]$Args[$i + 1]) -notmatch '^-' -or ([string]$Args[$i + 1]) -match '^-\d+(?:\.\d+)?$')) {
                 $options[$name] = [string]$Args[$i + 1]
                 $i++
             } else {
@@ -2941,7 +3629,7 @@ function Get-PseUsage {
 Usage: .\ps-edge.ps1 <command> [args] [options]
 
 Commands:
-  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>]
+  start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]
   start -Attach [-Port 9222]
   stop
   status
@@ -2951,6 +3639,7 @@ Commands:
   forward
   reload [-TimeoutSec 30]
   snapshot [-Selector <css>] [-MaxChars 24000]
+  inspect [-Selector <css>] [-MaxItems 200]
   screenshot [<path>] [-FullPage]
   pdf [<path>]
   resize <width> <height>
@@ -2962,6 +3651,7 @@ Commands:
   select <ref> <value> [<value>...]
   upload <ref> <path> [<path>...]
   eval <javascript>
+  batch -Json <json-array>
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
@@ -2982,6 +3672,7 @@ function Get-PseCommandMap {
         forward = 'Invoke-PseCmdForward'
         reload = 'Invoke-PseCmdReload'
         snapshot = 'Invoke-PseCmdSnapshot'
+        inspect = 'Invoke-PseCmdInspect'
         screenshot = 'Invoke-PseCmdScreenshot'
         pdf = 'Invoke-PseCmdPdf'
         resize = 'Invoke-PseCmdResize'
@@ -2993,6 +3684,7 @@ function Get-PseCommandMap {
         select = 'Invoke-PseCmdSelect'
         upload = 'Invoke-PseCmdUpload'
         eval = 'Invoke-PseCmdEval'
+        batch = 'Invoke-PseCmdBatch'
         wait = 'Invoke-PseCmdWait'
         cdp = 'Invoke-PseCmdCdp'
         tabs = 'Invoke-PseCmdTabs'

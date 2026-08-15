@@ -1,7 +1,9 @@
 function Get-PseSnapshotJs {
     param(
         [AllowNull()]
-        [string]$Selector
+        [string]$Selector,
+
+        [int]$MaxChars = 0
     )
 
     $selectorJson = 'null'
@@ -12,10 +14,27 @@ function Get-PseSnapshotJs {
     $js = @'
 (function() {
   var selector = __PSE_SELECTOR__;
+  var maxChars = __PSE_MAX_CHARS__;
   var noMatchPrefix = "\u0000PSE_NO_MATCH\u0000";
   var lines = [];
+  var outputChars = 0;
+  var truncated = false;
   var refCounter = 1;
   window.__pseRefs = {};
+
+  function emit(line) {
+    if (truncated) {
+      return false;
+    }
+    var added = String(line).length + (lines.length > 0 ? 1 : 0);
+    lines.push(String(line));
+    outputChars += added;
+    if (maxChars > 0 && outputChars > maxChars) {
+      truncated = true;
+      return false;
+    }
+    return true;
+  }
 
   function clean(value) {
     if (value === null || value === undefined) {
@@ -205,13 +224,13 @@ function Get-PseSnapshotJs {
     try { if ((role === "checkbox" || role === "radio") && el.checked) { line += " [checked]"; } } catch (e2) {}
     try { if (el.disabled) { line += " [disabled]"; } } catch (e3) {}
     try { if (role === "option" && el.selected) { line += " [selected]"; } } catch (e4) {}
-    lines.push(line);
+    emit(line);
     return { emitted: true, role: role, name: name, usedInnerText: usedInnerText };
   }
 
   function walk(node, depth) {
     try {
-      if (!node) {
+      if (!node || truncated) {
         return;
       }
       if (node.nodeType === 3) {
@@ -219,7 +238,7 @@ function Get-PseSnapshotJs {
         if (parent && isTextContainer(parent) && !parent.__pseUsedInnerTextName) {
           var text = truncate(node.nodeValue, 200);
           if (text) {
-            lines.push(new Array(depth + 1).join("  ") + "- text: " + text);
+            emit(new Array(depth + 1).join("  ") + "- text: " + text);
           }
         }
         return;
@@ -238,7 +257,7 @@ function Get-PseSnapshotJs {
         childDepth = depth + 1;
       }
       var children = el.childNodes;
-      for (var i = 0; i < children.length; i++) {
+      for (var i = 0; i < children.length && !truncated; i++) {
         walk(children[i], childDepth);
       }
       try { delete el.__pseUsedInnerTextName; } catch (e2) {}
@@ -258,11 +277,35 @@ function Get-PseSnapshotJs {
     }
   }
 
-  lines.push("- document " + quote(truncate(document.title || "", 80)));
+  emit("- document " + quote(truncate(document.title || "", 80)));
   walk(root, 1);
   return lines.join("\n");
 })()
 '@
 
-    return $js.Replace('__PSE_SELECTOR__', $selectorJson)
+    return $js.Replace('__PSE_SELECTOR__', $selectorJson).Replace('__PSE_MAX_CHARS__', [string]$MaxChars)
+}
+
+function Get-PseSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Session,
+
+        [AllowNull()]
+        [string]$Selector,
+
+        [int]$MaxChars = 24000
+    )
+
+    if ($MaxChars -lt 0) {
+        throw '-MaxChars must be 0 or a positive integer'
+    }
+
+    $js = Get-PseSnapshotJs -Selector $Selector -MaxChars $MaxChars
+    $snapshot = Invoke-PseInPage -Session $Session -JsExpression $js
+    $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
+    if ($null -ne $snapshot -and ([string]$snapshot).StartsWith($noMatchPrefix)) {
+        throw "no element matches selector '$Selector'"
+    }
+    return Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $MaxChars
 }

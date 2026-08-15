@@ -57,6 +57,7 @@ function Invoke-PseHttpText {
 
     $uri = "http://127.0.0.1:$Port$Path"
     $request = [System.Net.WebRequest]::Create($uri)
+    $request.Proxy = $null
     $request.Method = $Method
     $request.KeepAlive = $false
     $request.Timeout = 5000
@@ -128,7 +129,6 @@ function Get-PseCurrentStateAndTargets {
     }
 
     try {
-        [void](Invoke-PseHttpJson -Port ([int]$state.port) -Path '/json/version')
         $targets = @(Get-PseTargets -Port ([int]$state.port))
         return [pscustomobject]@{
             State = $state
@@ -215,6 +215,7 @@ function Invoke-PseCmdStart {
     $url = Get-PseOptionValue -Parsed $Parsed -Name 'url' -Default 'about:blank'
     $userDataDir = Get-PseOptionValue -Parsed $Parsed -Name 'userdatadir' -Default $null
     $downloadDir = Get-PseOptionValue -Parsed $Parsed -Name 'downloaddir' -Default $null
+    $oktaFastPassOrigin = Get-PseOptionValue -Parsed $Parsed -Name 'oktafastpassorigin' -Default $null
     $extraArg = @()
     if ($Parsed.Options.ContainsKey('extraarg')) {
         $extraArg = @($Parsed.Options['extraarg'] | ForEach-Object { [string]$_ })
@@ -233,7 +234,7 @@ function Invoke-PseCmdStart {
     }
 
     if ($attach) {
-        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg')) {
+        if ($Parsed.Options.ContainsKey('headless') -or $Parsed.Options.ContainsKey('url') -or $Parsed.Options.ContainsKey('userdatadir') -or $Parsed.Options.ContainsKey('noquietflags') -or $Parsed.Options.ContainsKey('extraarg') -or $Parsed.Options.ContainsKey('oktafastpassorigin')) {
             Write-PseCliError 'Error: -Attach does not launch a browser'
             return 1
         }
@@ -253,7 +254,7 @@ function Invoke-PseCmdStart {
         return 0
     }
 
-    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir
+    $version = Start-PseBrowser -Port $port -Headless:$headless -NoQuietFlags:$noQuietFlags -ExtraArg $extraArg -Url $url -UserDataDir $userDataDir -DownloadDir $downloadDir -OktaFastPassOrigin $oktaFastPassOrigin
     $state = Read-PseState
     if ($null -ne $version.PSObject.Properties['pseDownloadWarning'] -and $version.pseDownloadWarning) {
         Write-Output '# warning: could not set download dir'
@@ -451,15 +452,42 @@ function Invoke-PseCmdSnapshot {
     $session = $null
     try {
         $session = Get-PseSession
-        $js = Get-PseSnapshotJs -Selector $selector
-        $snapshot = Invoke-PseInPage -Session $session -JsExpression $js
-        $noMatchPrefix = [string]([char]0) + 'PSE_NO_MATCH' + [string]([char]0)
-        if ($null -ne $snapshot -and ([string]$snapshot).StartsWith($noMatchPrefix)) {
-            Write-PseCliError "Error: no element matches selector '$selector'"
+        try {
+            Write-Output (Get-PseSnapshot -Session $session -Selector $selector -MaxChars $maxChars)
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
             return 1
         }
+        Write-PseLocation -Session $session
+        return 0
+    } finally {
+        Close-PseSession -Session $session
+    }
+}
 
-        Write-Output (Limit-PseSnapshotText -Snapshot ([string]$snapshot) -MaxChars $maxChars)
+function Invoke-PseCmdInspect {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $selector = Get-PseOptionValue -Parsed $Parsed -Name 'selector' -Default $null
+    $maxItems = [int](Get-PseOptionValue -Parsed $Parsed -Name 'maxitems' -Default 200)
+    if ($maxItems -lt 0) {
+        Write-PseCliError 'Error: -MaxItems must be 0 or a positive integer'
+        return 1
+    }
+
+    $session = $null
+    try {
+        $session = Get-PseSession
+        try {
+            $items = @(Get-PseInspection -Session $session -Selector $selector -MaxItems $maxItems)
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
+        Write-Output (ConvertTo-PseJson -Object $items)
         Write-PseLocation -Session $session
         return 0
     } finally {
@@ -628,6 +656,42 @@ function Invoke-PseCmdEval {
         return 0
     } finally {
         Close-PseSession -Session $session
+    }
+}
+
+function Invoke-PseCmdBatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parsed
+    )
+
+    $json = Get-PseOptionValue -Parsed $Parsed -Name 'json' -Default $null
+    if ($null -eq $json -or $json -is [bool] -or [string]::IsNullOrWhiteSpace([string]$json)) {
+        Write-PseCliError 'Error: batch requires -Json <json-array>'
+        return 1
+    }
+
+    $text = ([string]$json).Trim()
+    if (-not $text.StartsWith('[')) {
+        Write-PseCliError 'Error: batch JSON root must be an array'
+        return 1
+    }
+
+    try {
+        $parsedSteps = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-PseCliError "Error: invalid batch JSON: $($_.Exception.Message)"
+        return 1
+    }
+    $steps = @($parsedSteps | ForEach-Object { $_ })
+
+    try {
+        $result = Invoke-PseBatch -Steps $steps
+        Write-Output (ConvertTo-PseJson -Object $result)
+        return 0
+    } catch {
+        Write-PseCliError "Error: $($_.Exception.Message)"
+        return 1
     }
 }
 
@@ -958,7 +1022,6 @@ function Invoke-PseCmdDialog {
         $session = $null
         try {
             $session = Get-PseSession
-            Set-PseDialogPolicyInPage -Session $session -Policy $policy
             Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
             return 0
         } finally {
