@@ -299,6 +299,14 @@ function Get-PseSession {
         }
         throw
     }
+    try {
+        [void](Send-PseCdp -Conn $conn -Method 'Target.setAutoAttach' -Params @{
+            autoAttach = $true
+            waitForDebuggerOnStart = $false
+            flatten = $true
+        })
+    } catch {
+    }
 
     $session = [pscustomobject]@{
         Conn = $conn

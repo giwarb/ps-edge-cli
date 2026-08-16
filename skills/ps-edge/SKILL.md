@@ -158,8 +158,9 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
 - Dialogs opened during a command are handled by the injected JS hook or CDP safety
-  net; `beforeunload` is always accepted, and auto-handled native dialogs appear as
-  `# dialog: ...` footer lines. If a command fails with the `Page.enable` timeout
+  net, including cross-origin iframe (OOPIF) dialogs; `beforeunload` is always
+  accepted, and auto-handled native dialogs appear as `# dialog: ...` footer lines.
+  If a command fails with the `Page.enable` timeout
   hint, run `dialog -Rescue` against the visible browser. Rescue is a headful-only
   concern because headless Edge auto-dismisses unattended dialogs. The persisted
   policy remains configurable with `dialog -Accept` / `dialog -Dismiss`.

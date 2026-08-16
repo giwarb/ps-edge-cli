@@ -933,16 +933,15 @@ function Invoke-PseCmdWait {
     $selectorGone = Get-PseOptionValue -Parsed $Parsed -Name 'selectorgone' -Default $null
     $timeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'timeoutsec' -Default 30)
 
-    if ($null -ne $timeValue) {
-        $milliseconds = [int]([double]$timeValue * 1000)
-        if ($milliseconds -gt 0) {
-            Start-Sleep -Milliseconds $milliseconds
-        }
-    }
-
     $session = $null
     try {
         $session = Get-PseSession
+        if ($null -ne $timeValue) {
+            $milliseconds = [int]([double]$timeValue * 1000)
+            if ($milliseconds -gt 0) {
+                Start-Sleep -Milliseconds $milliseconds
+            }
+        }
         $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
         $lastFailed = $null
         while ([DateTime]::UtcNow -le $deadline) {

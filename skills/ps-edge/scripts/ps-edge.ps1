@@ -268,7 +268,9 @@ function Send-PseCdpFireAndForget {
         [Parameter(Mandatory = $true)]
         [string]$Method,
 
-        [hashtable]$Params
+        [hashtable]$Params,
+
+        [string]$SessionId
     )
 
     $id = [int]$Conn.NextId
@@ -280,6 +282,9 @@ function Send-PseCdpFireAndForget {
     }
     if ($PSBoundParameters.ContainsKey('Params')) {
         $message.params = $Params
+    }
+    if (-not [string]::IsNullOrEmpty($SessionId)) {
+        $message.sessionId = $SessionId
     }
 
     $json = ConvertTo-PseJson $message
@@ -302,7 +307,7 @@ function Send-PseCdpFireAndForget {
     }
 }
 
-function Invoke-PseDialogAutoHandler {
+function Invoke-PseCdpAutoHandler {
     param(
         [Parameter(Mandatory = $true)]
         $Conn,
@@ -311,33 +316,57 @@ function Invoke-PseDialogAutoHandler {
         $Message
     )
 
-    if ($null -ne $Message.PSObject.Properties['id'] -or $Message.method -ne 'Page.javascriptDialogOpening') {
+    if ($null -ne $Message.PSObject.Properties['id']) {
         return $false
     }
 
-    $dialogParams = $Message.params
-    $response = Resolve-PseDialogResponse -Type $dialogParams.type -Policy $Conn.DialogPolicy -DefaultPrompt $dialogParams.defaultPrompt
-    $handleParams = @{ accept = [bool]$response.accept }
-    if ($null -ne $response.promptText) {
-        $handleParams.promptText = [string]$response.promptText
+    if ($Message.method -eq 'Page.javascriptDialogOpening') {
+        $dialogParams = $Message.params
+        $response = Resolve-PseDialogResponse -Type $dialogParams.type -Policy $Conn.DialogPolicy -DefaultPrompt $dialogParams.defaultPrompt
+        $handleParams = @{ accept = [bool]$response.accept }
+        if ($null -ne $response.promptText) {
+            $handleParams.promptText = [string]$response.promptText
+        }
+
+        try {
+            if ($null -ne $Message.PSObject.Properties['sessionId']) {
+                [void](Send-PseCdpFireAndForget -Conn $Conn -Method 'Page.handleJavaScriptDialog' -Params $handleParams -SessionId ([string]$Message.sessionId))
+            } else {
+                [void](Send-PseCdpFireAndForget -Conn $Conn -Method 'Page.handleJavaScriptDialog' -Params $handleParams)
+            }
+        } catch {
+        }
+
+        [void]$Conn.HandledDialogs.Add(@{
+            type = [string]$dialogParams.type
+            message = [string]$dialogParams.message
+            accept = [bool]$response.accept
+            promptText = $response.promptText
+        })
+        while ($Conn.HandledDialogs.Count -gt 100) {
+            $Conn.HandledDialogs.RemoveAt(0)
+        }
+
+        return $true
     }
 
-    try {
-        Send-PseCdpFireAndForget -Conn $Conn -Method 'Page.handleJavaScriptDialog' -Params $handleParams
-    } catch {
+    if ($Message.method -eq 'Target.attachedToTarget') {
+        $p = $Message.params
+        if ($p.targetInfo.type -eq 'iframe' -or $p.targetInfo.type -eq 'page') {
+            try {
+                [void](Send-PseCdpFireAndForget -Conn $Conn -Method 'Page.enable' -SessionId ([string]$p.sessionId))
+                [void](Send-PseCdpFireAndForget -Conn $Conn -Method 'Target.setAutoAttach' -Params @{
+                    autoAttach = $true
+                    waitForDebuggerOnStart = $false
+                    flatten = $true
+                } -SessionId ([string]$p.sessionId))
+            } catch {
+            }
+        }
+        return $true
     }
 
-    [void]$Conn.HandledDialogs.Add(@{
-        type = [string]$dialogParams.type
-        message = [string]$dialogParams.message
-        accept = [bool]$response.accept
-        promptText = $response.promptText
-    })
-    while ($Conn.HandledDialogs.Count -gt 100) {
-        $Conn.HandledDialogs.RemoveAt(0)
-    }
-
-    return $true
+    return $false
 }
 
 function Send-PseCdp {
@@ -349,6 +378,8 @@ function Send-PseCdp {
         [string]$Method,
 
         [hashtable]$Params,
+
+        [string]$SessionId,
 
         [int]$TimeoutSec = 30
     )
@@ -362,6 +393,9 @@ function Send-PseCdp {
     }
     if ($PSBoundParameters.ContainsKey('Params')) {
         $message.params = $Params
+    }
+    if (-not [string]::IsNullOrEmpty($SessionId)) {
+        $message.sessionId = $SessionId
     }
 
     $json = ConvertTo-PseJson $message
@@ -395,7 +429,7 @@ function Send-PseCdp {
             continue
         }
 
-        if (Invoke-PseDialogAutoHandler -Conn $Conn -Message $response) {
+        if (Invoke-PseCdpAutoHandler -Conn $Conn -Message $response) {
             continue
         }
 
@@ -434,7 +468,7 @@ function Wait-PseCdpEvent {
 
     for ($i = 0; $i -lt $Conn.Events.Count; $i++) {
         $event = $Conn.Events[$i]
-        if ($event.method -eq $EventName) {
+        if ($null -eq $event.PSObject.Properties['sessionId'] -and $event.method -eq $EventName) {
             $Conn.Events.RemoveAt($i)
             return $event.params
         }
@@ -452,7 +486,7 @@ function Wait-PseCdpEvent {
             continue
         }
 
-        if (Invoke-PseDialogAutoHandler -Conn $Conn -Message $message) {
+        if (Invoke-PseCdpAutoHandler -Conn $Conn -Message $message) {
             continue
         }
 
@@ -461,7 +495,7 @@ function Wait-PseCdpEvent {
             continue
         }
 
-        if ($message.method -eq $EventName) {
+        if ($null -eq $message.PSObject.Properties['sessionId'] -and $message.method -eq $EventName) {
             return $message.params
         }
 
@@ -1269,6 +1303,14 @@ function Get-PseSession {
             throw "$message A native dialog may be blocking the page - try 'dialog -Rescue'."
         }
         throw
+    }
+    try {
+        [void](Send-PseCdp -Conn $conn -Method 'Target.setAutoAttach' -Params @{
+            autoAttach = $true
+            waitForDebuggerOnStart = $false
+            flatten = $true
+        })
+    } catch {
     }
 
     $session = [pscustomobject]@{
@@ -3722,16 +3764,15 @@ function Invoke-PseCmdWait {
     $selectorGone = Get-PseOptionValue -Parsed $Parsed -Name 'selectorgone' -Default $null
     $timeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'timeoutsec' -Default 30)
 
-    if ($null -ne $timeValue) {
-        $milliseconds = [int]([double]$timeValue * 1000)
-        if ($milliseconds -gt 0) {
-            Start-Sleep -Milliseconds $milliseconds
-        }
-    }
-
     $session = $null
     try {
         $session = Get-PseSession
+        if ($null -ne $timeValue) {
+            $milliseconds = [int]([double]$timeValue * 1000)
+            if ($milliseconds -gt 0) {
+                Start-Sleep -Milliseconds $milliseconds
+            }
+        }
         $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
         $lastFailed = $null
         while ([DateTime]::UtcNow -le $deadline) {
