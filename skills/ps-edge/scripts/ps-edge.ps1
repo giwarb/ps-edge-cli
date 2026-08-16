@@ -157,6 +157,8 @@ function Connect-PseCdp {
         Socket = $socket
         NextId = 1
         Events = New-Object System.Collections.ArrayList
+        DialogPolicy = $null
+        HandledDialogs = New-Object System.Collections.ArrayList
     }
 }
 
@@ -206,6 +208,135 @@ function Receive-PseCdpMessage {
         $stream.Dispose()
         $cts.Dispose()
     }
+}
+
+function Resolve-PseDialogResponse {
+    param(
+        [string]$Type,
+
+        [AllowNull()]
+        $Policy,
+
+        [AllowNull()]
+        [string]$DefaultPrompt
+    )
+
+    $mode = 'dismiss'
+    $policyText = $null
+    if ($null -ne $Policy) {
+        if ($Policy.mode -eq 'accept') {
+            $mode = 'accept'
+        }
+        if ($null -ne $Policy.text) {
+            $policyText = [string]$Policy.text
+        }
+    }
+
+    if ($Type -eq 'beforeunload' -or $Type -eq 'alert') {
+        return @{
+            accept = $true
+            promptText = $null
+        }
+    }
+
+    $accept = ($mode -eq 'accept')
+    if ($Type -eq 'prompt' -and $accept) {
+        $promptText = ''
+        if ($null -ne $policyText) {
+            $promptText = $policyText
+        } elseif ($null -ne $DefaultPrompt) {
+            $promptText = $DefaultPrompt
+        }
+        return @{
+            accept = $true
+            promptText = $promptText
+        }
+    }
+
+    return @{
+        accept = $accept
+        promptText = $null
+    }
+}
+
+function Send-PseCdpFireAndForget {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Conn,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Method,
+
+        [hashtable]$Params
+    )
+
+    $id = [int]$Conn.NextId
+    $Conn.NextId = $id + 1
+
+    $message = @{
+        id = $id
+        method = $Method
+    }
+    if ($PSBoundParameters.ContainsKey('Params')) {
+        $message.params = $Params
+    }
+
+    $json = ConvertTo-PseJson $message
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $segment = [System.ArraySegment[byte]]::new($bytes)
+    $cts = [System.Threading.CancellationTokenSource]::new()
+
+    try {
+        $cts.CancelAfter(30000)
+        [void]$Conn.Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cts.Token).GetAwaiter().GetResult()
+    } catch [System.OperationCanceledException] {
+        throw "Timed out after 30 seconds sending CDP method $Method."
+    } catch {
+        if ($_.Exception.InnerException -is [System.OperationCanceledException]) {
+            throw "Timed out after 30 seconds sending CDP method $Method."
+        }
+        throw
+    } finally {
+        $cts.Dispose()
+    }
+}
+
+function Invoke-PseDialogAutoHandler {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Conn,
+
+        [Parameter(Mandatory = $true)]
+        $Message
+    )
+
+    if ($null -ne $Message.PSObject.Properties['id'] -or $Message.method -ne 'Page.javascriptDialogOpening') {
+        return $false
+    }
+
+    $dialogParams = $Message.params
+    $response = Resolve-PseDialogResponse -Type $dialogParams.type -Policy $Conn.DialogPolicy -DefaultPrompt $dialogParams.defaultPrompt
+    $handleParams = @{ accept = [bool]$response.accept }
+    if ($null -ne $response.promptText) {
+        $handleParams.promptText = [string]$response.promptText
+    }
+
+    try {
+        Send-PseCdpFireAndForget -Conn $Conn -Method 'Page.handleJavaScriptDialog' -Params $handleParams
+    } catch {
+    }
+
+    [void]$Conn.HandledDialogs.Add(@{
+        type = [string]$dialogParams.type
+        message = [string]$dialogParams.message
+        accept = [bool]$response.accept
+        promptText = $response.promptText
+    })
+    while ($Conn.HandledDialogs.Count -gt 100) {
+        $Conn.HandledDialogs.RemoveAt(0)
+    }
+
+    return $true
 }
 
 function Send-PseCdp {
@@ -263,6 +394,10 @@ function Send-PseCdp {
             continue
         }
 
+        if (Invoke-PseDialogAutoHandler -Conn $Conn -Message $response) {
+            continue
+        }
+
         $idProperty = $response.PSObject.Properties['id']
         if ($null -eq $idProperty) {
             [void]$Conn.Events.Add($response)
@@ -313,6 +448,10 @@ function Wait-PseCdpEvent {
 
         $message = Receive-PseCdpMessage -Conn $Conn -TimeoutSec $remaining
         if ($null -eq $message) {
+            continue
+        }
+
+        if (Invoke-PseDialogAutoHandler -Conn $Conn -Message $message) {
             continue
         }
 
@@ -1080,6 +1219,17 @@ function Get-PseSession {
         throw
     }
 
+    $conn.DialogPolicy = Get-PseDialogPolicy -State $state
+    try {
+        $pre = Resolve-PseDialogResponse -Type 'confirm' -Policy $conn.DialogPolicy -DefaultPrompt $null
+        $params = @{ accept = $pre.accept }
+        if ($null -ne $pre.promptText) {
+            $params.promptText = $pre.promptText
+        }
+        [void](Send-PseCdp -Conn $conn -Method 'Page.handleJavaScriptDialog' -Params $params -TimeoutSec 5)
+    } catch {
+    }
+
     $session = [pscustomobject]@{
         Conn = $conn
         Port = [int]$state.port
@@ -1159,6 +1309,18 @@ function Write-PseLocation {
     $location = Get-PseLocation -Session $Session
     Write-Output "# url: $($location.url)"
     Write-Output "# title: $($location.title)"
+    if ($Session.Conn.HandledDialogs.Count -gt 0) {
+        foreach ($dialog in $Session.Conn.HandledDialogs) {
+            if (-not $dialog.accept) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
+            } elseif ($null -ne $dialog.promptText) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
+            } else {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
+            }
+        }
+        $Session.Conn.HandledDialogs.Clear()
+    }
 }
 
 # Source: src/60-snapshot.ps1

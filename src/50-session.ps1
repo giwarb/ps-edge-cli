@@ -249,6 +249,17 @@ function Get-PseSession {
         throw
     }
 
+    $conn.DialogPolicy = Get-PseDialogPolicy -State $state
+    try {
+        $pre = Resolve-PseDialogResponse -Type 'confirm' -Policy $conn.DialogPolicy -DefaultPrompt $null
+        $params = @{ accept = $pre.accept }
+        if ($null -ne $pre.promptText) {
+            $params.promptText = $pre.promptText
+        }
+        [void](Send-PseCdp -Conn $conn -Method 'Page.handleJavaScriptDialog' -Params $params -TimeoutSec 5)
+    } catch {
+    }
+
     $session = [pscustomobject]@{
         Conn = $conn
         Port = [int]$state.port
@@ -328,4 +339,16 @@ function Write-PseLocation {
     $location = Get-PseLocation -Session $Session
     Write-Output "# url: $($location.url)"
     Write-Output "# title: $($location.title)"
+    if ($Session.Conn.HandledDialogs.Count -gt 0) {
+        foreach ($dialog in $Session.Conn.HandledDialogs) {
+            if (-not $dialog.accept) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
+            } elseif ($null -ne $dialog.promptText) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
+            } else {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
+            }
+        }
+        $Session.Conn.HandledDialogs.Clear()
+    }
 }

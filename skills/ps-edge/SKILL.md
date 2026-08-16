@@ -110,6 +110,7 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
 | `Error: batch step N (action): ...` | The batch stopped at that zero-based step. Inspect/snapshot again if navigation invalidated refs, then submit a corrected remaining batch. |
 | `Error: invalid selector ...` from `inspect` | Fix or narrow the CSS selector. A no-match selector is also an explicit error. |
 | `Error: browser is not running - run 'start' first` | Run `start -Headless` (state lives in `%TEMP%\ps-edge\state.json`). |
+| `# dialog: [type] ... -> dismissed` in output | A native dialog was auto-answered. If the page needed acceptance, run `dialog -Accept` and retry the action. |
 | `port 9222 is already in use` | Another session owns it: `stop` first, or use `start -Port <other>`. |
 | `no CDP endpoint ... launch Edge first` from `start -Attach` | A normal running Edge is not attachable. Use plain `start`, or manually launch a separate Edge with both `--remote-debugging-port=9222` and a dedicated `--user-data-dir`, then attach. |
 | `Edge did not start a CDP endpoint...` | Do not retry with certificate flags or random ports: page TLS does not control the local CDP endpoint. Read the appended endpoint/process error and fix that cause. |
@@ -155,9 +156,11 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   directory, then run `downloads` to list completed and in-progress files.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
-- Dialogs are auto-dismissed by default. Set `dialog -Accept` before clicking a
-  delete button when confirmation is required, then run `dialog` to see what was
-  suppressed.
+- Dialogs never block commands: the injected JS hook is the fast path and a CDP
+  safety net answers any native dialog that still opens. `beforeunload` is always
+  accepted so navigation proceeds, and auto-handled native dialogs appear as
+  `# dialog: ...` footer lines. The persisted policy remains configurable with
+  `dialog -Accept` / `dialog -Dismiss`.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 

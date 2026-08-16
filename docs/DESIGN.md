@@ -94,7 +94,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | wait | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | Poll via `Runtime.evaluate` (document.body.innerText contains / not contains, `document.querySelector` exists / is gone). All supplied conditions must hold. |
 | tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | `/json/list`, `/json/new` (PUT), `/json/close/<id>`, `/json/activate/<id>`. `select` updates `targetId` in state. |
 | console | `console` | Reads `window.__pseConsole` (hook injected at start/goto via `Page.addScriptToEvaluateOnNewDocument`). Best effort. |
-| dialog | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Native `alert`/`confirm`/`prompt` are suppressed by an injected hook, recorded in `window.__pseDialogs`, and answered from persisted policy. |
+| dialog | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | Two layers prevent hangs: the injected page hook is the fast path, while both CDP receive loops auto-handle `Page.javascriptDialogOpening` from persisted policy and report native answers as `# dialog: ...` footer lines. Session connect also pre-clears an already-open dialog before page JS evaluation; `beforeunload` is always accepted so navigation proceeds. |
 | cdp | `cdp <method> [<params-json>]` | Raw CDP escape hatch, e.g. `cdp Page.navigate '{"url":"https://example.com"}'`. Prints result JSON. |
 | help | `help [command]` | Usage. Also shown on unknown command (to stderr). |
 
