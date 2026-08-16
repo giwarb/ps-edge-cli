@@ -156,11 +156,13 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   directory, then run `downloads` to list completed and in-progress files.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
-- Dialogs never block commands: the injected JS hook is the fast path and a CDP
-  safety net answers any native dialog that still opens. `beforeunload` is always
-  accepted so navigation proceeds, and auto-handled native dialogs appear as
-  `# dialog: ...` footer lines. The persisted policy remains configurable with
-  `dialog -Accept` / `dialog -Dismiss`.
+- Dialogs never block commands: the injected JS hook is the fast path and is
+  installed recursively in same-origin iframes; cross-origin iframes fall back to
+  the CDP safety net. A dialog already open when a command connects is cleared
+  before the Page domain is enabled. `beforeunload` is always accepted so
+  navigation proceeds, and auto-handled native dialogs appear as `# dialog: ...`
+  footer lines. The persisted policy remains configurable with `dialog -Accept` /
+  `dialog -Dismiss`.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 

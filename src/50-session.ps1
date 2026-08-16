@@ -64,6 +64,20 @@ function Format-PseDialogPolicy {
     return $line
 }
 
+function Test-PseNoDialogError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [string]$Message
+    )
+
+    if ($null -eq $Message) {
+        return $false
+    }
+
+    return $Message.IndexOf('No dialog is showing', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 function Set-PseDialogPolicyInPage {
     param(
         [Parameter(Mandatory = $true)]
@@ -80,101 +94,147 @@ function Set-PseDialogPolicyInPage {
 function Get-PsePageHookJs {
     @'
 (function() {
-  function stringify(value) {
-    try {
-      if (typeof value === "string") { return value; }
-      if (value instanceof Error) { return value.stack || value.message || String(value); }
-      var json = JSON.stringify(value);
-      if (json !== undefined) { return json; }
-      return String(value);
-    } catch (e) {
-      try { return String(value); } catch (e2) { return "[unprintable]"; }
-    }
-  }
-  if (!window.__pseConsoleHookInstalled) {
-    window.__pseConsoleHookInstalled = true;
-    window.__pseConsole = window.__pseConsole || [];
-    function append(level, args) {
+  function pseRoot(win) {
+    var root = win;
+    while (true) {
       try {
-        window.__pseConsole.push({
-          level: level,
-          text: Array.prototype.map.call(args, stringify).join(" "),
-          ts: Date.now()
-        });
-        while (window.__pseConsole.length > 500) {
-          window.__pseConsole.shift();
-        }
+        var parentWindow = root.parent;
+        if (!parentWindow || parentWindow === root) { break; }
+        var parentDocument = parentWindow.document;
+        root = parentWindow;
       } catch (e) {
+        break;
       }
     }
-    ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-      var original = console[level];
-      console[level] = function() {
-        append(level, arguments);
-        if (typeof original === "function") {
-          return original.apply(console, arguments);
+    return root;
+  }
+  function installPseHooks(win) {
+    if (!win.__pseConsoleHookInstalled) {
+      win.__pseConsoleHookInstalled = true;
+      win.__pseConsole = win.__pseConsole || [];
+      function stringify(value) {
+        try {
+          if (typeof value === "string") { return value; }
+          if (value instanceof win.Error) { return value.stack || value.message || String(value); }
+          var json = JSON.stringify(value);
+          if (json !== undefined) { return json; }
+          return String(value);
+        } catch (e) {
+          try { return String(value); } catch (e2) { return "[unprintable]"; }
         }
-      };
-    });
-    window.addEventListener("error", function(event) {
-      append("error", [event.message || "error"]);
-    });
-  }
-  if (window.__pseDialogHookInstalled) {
-    return;
-  }
-  window.__pseDialogHookInstalled = true;
-  window.__pseDialogs = window.__pseDialogs || [];
-  function getPolicy() {
-    var policy = window.__pseDialogPolicy || {};
-    var mode = policy.mode === "accept" ? "accept" : "dismiss";
-    var text = Object.prototype.hasOwnProperty.call(policy, "text") ? policy.text : null;
-    if (text !== null && text !== undefined) {
-      text = String(text);
-    } else {
-      text = null;
+      }
+      function append(level, args) {
+        try {
+          win.__pseConsole.push({
+            level: level,
+            text: Array.prototype.map.call(args, stringify).join(" "),
+            ts: Date.now()
+          });
+          while (win.__pseConsole.length > 500) {
+            win.__pseConsole.shift();
+          }
+        } catch (e) {
+        }
+      }
+      ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+        var original = win.console[level];
+        win.console[level] = function() {
+          append(level, arguments);
+          if (typeof original === "function") {
+            return original.apply(win.console, arguments);
+          }
+        };
+      });
+      win.addEventListener("error", function(event) {
+        append("error", [event.message || "error"]);
+      });
     }
-    return { mode: mode, text: text };
-  }
-  function responseString(value) {
-    if (value === null) { return "null"; }
-    if (value === undefined) { return ""; }
-    if (value === true) { return "true"; }
-    if (value === false) { return "false"; }
-    return String(value);
-  }
-  function recordDialog(type, message, response) {
+    if (win.__pseDialogHookInstalled) {
+      return;
+    }
+    win.__pseDialogHookInstalled = true;
     try {
-      window.__pseDialogs.push({
+      var initialRoot = pseRoot(win);
+      initialRoot.__pseDialogs = initialRoot.__pseDialogs || [];
+    } catch (e) {
+      win.__pseDialogs = win.__pseDialogs || [];
+    }
+    function normalizePolicy(policy) {
+      var mode = policy.mode === "accept" ? "accept" : "dismiss";
+      var text = Object.prototype.hasOwnProperty.call(policy, "text") ? policy.text : null;
+      if (text !== null && text !== undefined) {
+        text = String(text);
+      } else {
+        text = null;
+      }
+      return { mode: mode, text: text };
+    }
+    function getPolicy() {
+      try {
+        return normalizePolicy(pseRoot(win).__pseDialogPolicy || {});
+      } catch (e) {
+        try {
+          return normalizePolicy(win.__pseDialogPolicy || {});
+        } catch (e2) {
+          return { mode: "dismiss", text: null };
+        }
+      }
+    }
+    function responseString(value) {
+      if (value === null) { return "null"; }
+      if (value === undefined) { return ""; }
+      if (value === true) { return "true"; }
+      if (value === false) { return "false"; }
+      return String(value);
+    }
+    function appendDialog(target, type, message, response) {
+      target.__pseDialogs = target.__pseDialogs || [];
+      target.__pseDialogs.push({
         type: type,
         message: String(message),
         response: responseString(response),
         ts: Date.now()
       });
-      while (window.__pseDialogs.length > 100) {
-        window.__pseDialogs.shift();
+      while (target.__pseDialogs.length > 100) {
+        target.__pseDialogs.shift();
       }
-    } catch (e) {
+    }
+    function recordDialog(type, message, response) {
+      try {
+        appendDialog(pseRoot(win), type, message, response);
+      } catch (e) {
+        try {
+          appendDialog(win, type, message, response);
+        } catch (e2) {
+        }
+      }
+    }
+    win.alert = function(message) {
+      recordDialog("alert", message, undefined);
+      return undefined;
+    };
+    win.confirm = function(message) {
+      var response = getPolicy().mode === "accept";
+      recordDialog("confirm", message, response);
+      return response;
+    };
+    win.prompt = function(message, defaultValue) {
+      var policy = getPolicy();
+      var response = null;
+      if (policy.mode === "accept") {
+        response = policy.text !== null ? policy.text : (defaultValue !== undefined ? defaultValue : "");
+      }
+      recordDialog("prompt", message, response);
+      return response;
+    };
+  }
+  function walk(win) {
+    installPseHooks(win);
+    for (var i = 0; i < win.frames.length; i++) {
+      try { walk(win.frames[i]); } catch (e) { }
     }
   }
-  window.alert = function(message) {
-    recordDialog("alert", message, undefined);
-    return undefined;
-  };
-  window.confirm = function(message) {
-    var response = getPolicy().mode === "accept";
-    recordDialog("confirm", message, response);
-    return response;
-  };
-  window.prompt = function(message, defaultValue) {
-    var policy = getPolicy();
-    var response = null;
-    if (policy.mode === "accept") {
-      response = policy.text !== null ? policy.text : (defaultValue !== undefined ? defaultValue : "");
-    }
-    recordDialog("prompt", message, response);
-    return response;
-  };
+  walk(window);
 })();
 '@
 }
@@ -242,13 +302,6 @@ function Get-PseSession {
     }
 
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
-    try {
-        [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
-    } catch {
-        Close-PseCdp -Conn $conn
-        throw
-    }
-
     $conn.DialogPolicy = Get-PseDialogPolicy -State $state
     try {
         $pre = Resolve-PseDialogResponse -Type 'confirm' -Policy $conn.DialogPolicy -DefaultPrompt $null
@@ -258,6 +311,17 @@ function Get-PseSession {
         }
         [void](Send-PseCdp -Conn $conn -Method 'Page.handleJavaScriptDialog' -Params $params -TimeoutSec 5)
     } catch {
+        if (-not (Test-PseNoDialogError -Message $_.Exception.Message)) {
+            Close-PseCdp -Conn $conn
+            throw
+        }
+    }
+
+    try {
+        [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
+    } catch {
+        Close-PseCdp -Conn $conn
+        throw
     }
 
     $session = [pscustomobject]@{

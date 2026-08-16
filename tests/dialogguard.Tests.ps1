@@ -155,6 +155,10 @@ Assert-PseTrue ($promptDismiss.accept -eq $false -and $null -eq $promptDismiss.p
 $nullPolicy = Resolve-PseDialogResponse -Type 'confirm' -Policy $null -DefaultPrompt $null
 Assert-PseTrue ($nullPolicy.accept -eq $false -and $null -eq $nullPolicy.promptText) 'null policy should be treated as dismiss.'
 
+Assert-PseTrue (Test-PseNoDialogError -Message 'CDP error -32000: No dialog is showing (Page.handleJavaScriptDialog)') 'the no-dialog CDP error should be recognized.'
+Assert-PseTrue (-not (Test-PseNoDialogError -Message 'CDP error -32000: Something else')) 'an unrelated CDP error must not be treated as no-dialog.'
+Assert-PseTrue (-not (Test-PseNoDialogError -Message 'Timed out after 5 seconds waiting for CDP response to Page.handleJavaScriptDialog.')) 'a dialog-clear timeout must not be treated as no-dialog.'
+
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ps-edge-dialogguard-test-' + [Guid]::NewGuid().ToString('N'))
 $serverJob = $null
 
@@ -221,6 +225,14 @@ try {
 <html>
 <head><title>Dialog Guard Navigation</title></head>
 <body>
+  <iframe id="frame1" title="frame fixture" srcdoc='
+    <button id="fc" onclick="document.getElementById(&#39;flog&#39;).textContent = String(confirm(&#39;frame?&#39;))">Frame Confirm</button>
+    <div id="flog"></div>
+    <iframe id="frame2" title="nested frame fixture" srcdoc=&quot;
+      <button id=&amp;quot;nc&amp;quot; onclick=&amp;quot;document.getElementById(&amp;#39;nlog&amp;#39;).textContent = String(confirm(&amp;#39;nested frame?&amp;#39;))&amp;quot;>Nested Frame Confirm</button>
+      <div id=&amp;quot;nlog&amp;quot;></div>
+    &quot;></iframe>
+  '></iframe>
   <button id="nav" onclick="setTimeout(function(){ location.href='$pageBUrl'; }, 400)">Navigate Button</button>
 </body>
 </html>
@@ -231,6 +243,64 @@ try {
 
     $goto = Invoke-PseCliForTest -Arguments @('goto', (New-PseDataUrl -Html $pageA))
     Assert-PseTrue ($goto.ExitCode -eq 0) "goto page A failed: $($goto.Stderr)"
+
+    $frameTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $frameClick = Invoke-PseCliForTest -Arguments @('eval', "(function(){ var w = frames[0]; w.document.getElementById('fc').click(); return w.document.getElementById('flog').textContent; })()")
+    $frameTimer.Stop()
+    Assert-PseTrue ($frameClick.ExitCode -eq 0) "iframe confirm failed: $($frameClick.Stderr)"
+    Assert-PseTrue ($frameTimer.Elapsed.TotalSeconds -lt 15) "iframe confirm command took too long: $($frameTimer.Elapsed.TotalSeconds) seconds"
+    Assert-PseTrue ($frameClick.Stdout.Trim() -eq 'false') "iframe confirm should follow dismiss policy, got: $($frameClick.Stdout)"
+
+    $nestedTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $nestedClick = Invoke-PseCliForTest -Arguments @('eval', "(function(){ var w = frames[0].frames[0]; w.document.getElementById('nc').click(); return w.document.getElementById('nlog').textContent; })()")
+    $nestedTimer.Stop()
+    Assert-PseTrue ($nestedClick.ExitCode -eq 0) "nested iframe confirm failed: $($nestedClick.Stderr)"
+    Assert-PseTrue ($nestedTimer.Elapsed.TotalSeconds -lt 15) "nested iframe confirm command took too long: $($nestedTimer.Elapsed.TotalSeconds) seconds"
+    Assert-PseTrue ($nestedClick.Stdout.Trim() -eq 'false') "nested iframe confirm should follow dismiss policy, got: $($nestedClick.Stdout)"
+
+    $frameDialogs = Invoke-PseCliForTest -Arguments @('dialog')
+    Assert-PseTrue ($frameDialogs.ExitCode -eq 0) "reading iframe dialogs failed: $($frameDialogs.Stderr)"
+    Assert-PseTrue ($frameDialogs.Stdout -match '\[confirm\] frame\? -> false') "main-frame dialog history did not include the iframe confirm: $($frameDialogs.Stdout)"
+    Assert-PseTrue ($frameDialogs.Stdout -match '\[confirm\] nested frame\? -> false') "main-frame dialog history did not include the nested iframe confirm: $($frameDialogs.Stdout)"
+
+    $lateFrameJs = @'
+(function() {
+  setTimeout(function() {
+    var frame = document.createElement("iframe");
+    frame.id = "late";
+    frame.srcdoc = "<button id=\"lc\" onclick=\"document.getElementById('llog').textContent = String(confirm('late outer frame?'))\">Late Outer Frame Confirm</button><div id=\"llog\"></div><iframe id=\"lateNested\" srcdoc='<button id=&quot;lnc&quot; onclick=&quot;document.getElementById(&amp;quot;lnlog&amp;quot;).textContent = String(confirm(&amp;quot;late nested frame?&amp;quot;))&quot;>Late Nested Frame Confirm</button><div id=&quot;lnlog&quot;></div>'></iframe>";
+    document.body.appendChild(frame);
+  }, 400);
+  return "armed";
+})()
+'@
+    $lateCreate = Invoke-PseCliForTest -Arguments @('eval', $lateFrameJs)
+    Assert-PseTrue ($lateCreate.ExitCode -eq 0) "later-created iframe setup failed: $($lateCreate.Stderr)"
+    Assert-PseTrue ($lateCreate.Stdout.Trim() -eq 'armed') "later-created iframe timer was not armed: $($lateCreate.Stdout)"
+
+    Start-Sleep -Seconds 2
+
+    $lateReconnect = Invoke-PseCliForTest -Arguments @('dialog')
+    Assert-PseTrue ($lateReconnect.ExitCode -eq 0) "reconnect after creating an iframe failed: $($lateReconnect.Stderr)"
+
+    $lateOuterTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $lateOuterClick = Invoke-PseCliForTest -Arguments @('eval', "(function(){ var w = document.getElementById('late').contentWindow; w.document.getElementById('lc').click(); return w.document.getElementById('llog').textContent; })()")
+    $lateOuterTimer.Stop()
+    Assert-PseTrue ($lateOuterClick.ExitCode -eq 0) "later-created outer iframe confirm failed: $($lateOuterClick.Stderr)"
+    Assert-PseTrue ($lateOuterTimer.Elapsed.TotalSeconds -lt 15) "later-created outer iframe confirm command took too long: $($lateOuterTimer.Elapsed.TotalSeconds) seconds"
+    Assert-PseTrue ($lateOuterClick.Stdout.Trim() -eq 'false') "later-created outer iframe confirm should follow dismiss policy, got: $($lateOuterClick.Stdout)"
+
+    $lateNestedTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $lateNestedClick = Invoke-PseCliForTest -Arguments @('eval', "(function(){ var w = document.getElementById('late').contentWindow.frames[0]; w.document.getElementById('lnc').click(); return w.document.getElementById('lnlog').textContent; })()")
+    $lateNestedTimer.Stop()
+    Assert-PseTrue ($lateNestedClick.ExitCode -eq 0) "later-created nested iframe confirm failed: $($lateNestedClick.Stderr)"
+    Assert-PseTrue ($lateNestedTimer.Elapsed.TotalSeconds -lt 15) "later-created nested iframe confirm command took too long: $($lateNestedTimer.Elapsed.TotalSeconds) seconds"
+    Assert-PseTrue ($lateNestedClick.Stdout.Trim() -eq 'false') "later-created nested iframe confirm should follow dismiss policy, got: $($lateNestedClick.Stdout)"
+
+    $lateDialogs = Invoke-PseCliForTest -Arguments @('dialog')
+    Assert-PseTrue ($lateDialogs.ExitCode -eq 0) "reading later-created iframe dialogs failed: $($lateDialogs.Stderr)"
+    Assert-PseTrue ($lateDialogs.Stdout -match '\[confirm\] late outer frame\? -> false') "main-frame dialog history did not include the later-created outer iframe confirm: $($lateDialogs.Stdout)"
+    Assert-PseTrue ($lateDialogs.Stdout -match '\[confirm\] late nested frame\? -> false') "main-frame dialog history did not include the later-created nested iframe confirm: $($lateDialogs.Stdout)"
 
     $snapshotA = Invoke-PseCliForTest -Arguments @('snapshot')
     Assert-PseTrue ($snapshotA.ExitCode -eq 0) "page A snapshot failed: $($snapshotA.Stderr)"
