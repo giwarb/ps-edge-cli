@@ -155,9 +155,14 @@ Assert-PseTrue ($promptDismiss.accept -eq $false -and $null -eq $promptDismiss.p
 $nullPolicy = Resolve-PseDialogResponse -Type 'confirm' -Policy $null -DefaultPrompt $null
 Assert-PseTrue ($nullPolicy.accept -eq $false -and $null -eq $nullPolicy.promptText) 'null policy should be treated as dismiss.'
 
-Assert-PseTrue (Test-PseNoDialogError -Message 'CDP error -32000: No dialog is showing (Page.handleJavaScriptDialog)') 'the no-dialog CDP error should be recognized.'
-Assert-PseTrue (-not (Test-PseNoDialogError -Message 'CDP error -32000: Something else')) 'an unrelated CDP error must not be treated as no-dialog.'
-Assert-PseTrue (-not (Test-PseNoDialogError -Message 'Timed out after 5 seconds waiting for CDP response to Page.handleJavaScriptDialog.')) 'a dialog-clear timeout must not be treated as no-dialog.'
+$rescueConflict = Invoke-PseCliForTest -Arguments @('dialog', '-Rescue', '-Accept', '-Dismiss')
+Assert-PseTrue ($rescueConflict.ExitCode -eq 1) 'dialog -Rescue -Accept -Dismiss should fail.'
+Assert-PseTrue ($rescueConflict.Stderr -match '-Accept and -Dismiss cannot be used together') "dialog rescue conflict error was not reported: $($rescueConflict.Stderr)"
+
+Clear-PseState
+$rescueMissing = Invoke-PseCliForTest -Arguments @('dialog', '-Rescue')
+Assert-PseTrue ($rescueMissing.ExitCode -eq 1) 'dialog -Rescue without a native dialog should fail.'
+Assert-PseTrue ($rescueMissing.Stderr -match 'no Edge window found|no native dialog found') "dialog rescue missing-window/dialog error was not reported: $($rescueMissing.Stderr)"
 
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ps-edge-dialogguard-test-' + [Guid]::NewGuid().ToString('N'))
 $serverJob = $null

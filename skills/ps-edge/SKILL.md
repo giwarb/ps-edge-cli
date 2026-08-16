@@ -62,7 +62,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Wait | `wait -Text <str>` / `wait -Gone <str>` / `wait -Selector <css>` / `wait -SelectorGone <css>` / `wait -Time <sec>` (`-TimeoutSec 30`) |
 | Tabs | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` |
 | Console logs | `console` (captured best-effort after the session hook is installed) |
-| JS dialogs | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` |
+| JS dialogs | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` / `dialog -Rescue [-Accept [-Text <reply>] \| -Dismiss]` |
 | Raw CDP escape hatch | `cdp <method> [<params-json>]` e.g. `cdp Page.navigate '{"url":"https://example.com"}'` |
 | Usage | `help` |
 
@@ -111,6 +111,7 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
 | `Error: invalid selector ...` from `inspect` | Fix or narrow the CSS selector. A no-match selector is also an explicit error. |
 | `Error: browser is not running - run 'start' first` | Run `start -Headless` (state lives in `%TEMP%\ps-edge\state.json`). |
 | `# dialog: [type] ... -> dismissed` in output | A native dialog was auto-answered. If the page needed acceptance, run `dialog -Accept` and retry the action. |
+| `Page.enable` timed out with `try 'dialog -Rescue'` | A native dialog opened while no CLI client was attached. With a visible browser, run `dialog -Rescue`; headless Edge auto-dismisses unattended dialogs. |
 | `port 9222 is already in use` | Another session owns it: `stop` first, or use `start -Port <other>`. |
 | `no CDP endpoint ... launch Edge first` from `start -Attach` | A normal running Edge is not attachable. Use plain `start`, or manually launch a separate Edge with both `--remote-debugging-port=9222` and a dedicated `--user-data-dir`, then attach. |
 | `Edge did not start a CDP endpoint...` | Do not retry with certificate flags or random ports: page TLS does not control the local CDP endpoint. Read the appended endpoint/process error and fix that cause. |
@@ -156,13 +157,12 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   directory, then run `downloads` to list completed and in-progress files.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
-- Dialogs never block commands: the injected JS hook is the fast path and is
-  installed recursively in same-origin iframes; cross-origin iframes fall back to
-  the CDP safety net. A dialog already open when a command connects is cleared
-  before the Page domain is enabled. `beforeunload` is always accepted so
-  navigation proceeds, and auto-handled native dialogs appear as `# dialog: ...`
-  footer lines. The persisted policy remains configurable with `dialog -Accept` /
-  `dialog -Dismiss`.
+- Dialogs opened during a command are handled by the injected JS hook or CDP safety
+  net; `beforeunload` is always accepted, and auto-handled native dialogs appear as
+  `# dialog: ...` footer lines. If a command fails with the `Page.enable` timeout
+  hint, run `dialog -Rescue` against the visible browser. Rescue is a headful-only
+  concern because headless Edge auto-dismisses unattended dialogs. The persisted
+  policy remains configurable with `dialog -Accept` / `dialog -Dismiss`.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 

@@ -64,20 +64,6 @@ function Format-PseDialogPolicy {
     return $line
 }
 
-function Test-PseNoDialogError {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowNull()]
-        [string]$Message
-    )
-
-    if ($null -eq $Message) {
-        return $false
-    }
-
-    return $Message.IndexOf('No dialog is showing', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-}
-
 function Set-PseDialogPolicyInPage {
     param(
         [Parameter(Mandatory = $true)]
@@ -304,23 +290,13 @@ function Get-PseSession {
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
     $conn.DialogPolicy = Get-PseDialogPolicy -State $state
     try {
-        $pre = Resolve-PseDialogResponse -Type 'confirm' -Policy $conn.DialogPolicy -DefaultPrompt $null
-        $params = @{ accept = $pre.accept }
-        if ($null -ne $pre.promptText) {
-            $params.promptText = $pre.promptText
-        }
-        [void](Send-PseCdp -Conn $conn -Method 'Page.handleJavaScriptDialog' -Params $params -TimeoutSec 5)
-    } catch {
-        if (-not (Test-PseNoDialogError -Message $_.Exception.Message)) {
-            Close-PseCdp -Conn $conn
-            throw
-        }
-    }
-
-    try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
     } catch {
+        $message = $_.Exception.Message
         Close-PseCdp -Conn $conn
+        if ($message.IndexOf('Timed out', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "$message A native dialog may be blocking the page - try 'dialog -Rescue'."
+        }
         throw
     }
 

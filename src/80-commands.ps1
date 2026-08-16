@@ -992,9 +992,34 @@ function Invoke-PseCmdDialog {
 
     $accept = $Parsed.Options.ContainsKey('accept')
     $dismiss = $Parsed.Options.ContainsKey('dismiss')
+    $rescue = $Parsed.Options.ContainsKey('rescue')
     if ($accept -and $dismiss) {
         Write-PseCliError 'Error: -Accept and -Dismiss cannot be used together'
         return 1
+    }
+
+    if ($rescue) {
+        $stateForRescue = Read-PseState
+        $policyForRescue = Get-PseDialogPolicy -State $stateForRescue
+        $rescueAccept = $accept
+        $rescueText = $null
+        if (-not $accept -and -not $dismiss) {
+            $rescueAccept = $policyForRescue.mode -eq 'accept'
+            if ($rescueAccept) {
+                $rescueText = $policyForRescue.text
+            }
+        } elseif ($accept -and $Parsed.Options.ContainsKey('text')) {
+            $rescueText = [string]$Parsed.Options['text']
+        }
+
+        try {
+            $result = Invoke-PseNativeDialogRescue -State $stateForRescue -Accept $rescueAccept -Text $rescueText
+            Write-Output "Rescued native dialog: $result"
+            return 0
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
     }
 
     if ($accept -or $dismiss) {

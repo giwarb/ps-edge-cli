@@ -10,6 +10,7 @@ Generation source list:
 - src/30-cdp.ps1
 - src/40-browser.ps1
 - src/50-session.ps1
+- src/55-uia.ps1
 - src/60-snapshot.ps1
 - src/65-inspect.ps1
 - src/70-actions.ps1
@@ -1034,20 +1035,6 @@ function Format-PseDialogPolicy {
     return $line
 }
 
-function Test-PseNoDialogError {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowNull()]
-        [string]$Message
-    )
-
-    if ($null -eq $Message) {
-        return $false
-    }
-
-    return $Message.IndexOf('No dialog is showing', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-}
-
 function Set-PseDialogPolicyInPage {
     param(
         [Parameter(Mandatory = $true)]
@@ -1274,23 +1261,13 @@ function Get-PseSession {
     $conn = Connect-PseCdp -WebSocketUrl $selected.webSocketDebuggerUrl
     $conn.DialogPolicy = Get-PseDialogPolicy -State $state
     try {
-        $pre = Resolve-PseDialogResponse -Type 'confirm' -Policy $conn.DialogPolicy -DefaultPrompt $null
-        $params = @{ accept = $pre.accept }
-        if ($null -ne $pre.promptText) {
-            $params.promptText = $pre.promptText
-        }
-        [void](Send-PseCdp -Conn $conn -Method 'Page.handleJavaScriptDialog' -Params $params -TimeoutSec 5)
-    } catch {
-        if (-not (Test-PseNoDialogError -Message $_.Exception.Message)) {
-            Close-PseCdp -Conn $conn
-            throw
-        }
-    }
-
-    try {
         [void](Send-PseCdp -Conn $conn -Method 'Page.enable')
     } catch {
+        $message = $_.Exception.Message
         Close-PseCdp -Conn $conn
+        if ($message.IndexOf('Timed out', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "$message A native dialog may be blocking the page - try 'dialog -Rescue'."
+        }
         throw
     }
 
@@ -1385,6 +1362,231 @@ function Write-PseLocation {
         }
         $Session.Conn.HandledDialogs.Clear()
     }
+}
+
+# Source: src/55-uia.ps1
+function Initialize-PseUia {
+    [void](Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop)
+    [void](Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop)
+}
+
+function Get-PseUiaEdgeWindows {
+    param(
+        [AllowNull()]
+        $BrowserPid = $null
+    )
+
+    Initialize-PseUia
+
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $children = $root.FindAll(
+        [System.Windows.Automation.TreeScope]::Children,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    $found = New-Object System.Collections.ArrayList
+    foreach ($window in $children) {
+        try {
+            $windowPid = [int]$window.GetCurrentPropertyValue(
+                [System.Windows.Automation.AutomationElement]::ProcessIdProperty
+            )
+        } catch {
+            continue
+        }
+
+        if ($null -ne $BrowserPid) {
+            if ($windowPid -eq [int]$BrowserPid) {
+                [void]$found.Add($window)
+            }
+            continue
+        }
+
+        try {
+            $process = Get-Process -Id $windowPid -ErrorAction Stop
+            if ($process.ProcessName -ieq 'msedge') {
+                [void]$found.Add($window)
+            }
+        } catch {
+        }
+    }
+
+    return @($found | ForEach-Object { $_ })
+}
+
+function Find-PseNativeDialogButton {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Windows,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Names
+    )
+
+    Initialize-PseUia
+
+    $documentCondition = New-Object -TypeName System.Windows.Automation.PropertyCondition -ArgumentList @(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Document
+    )
+    $buttonCondition = New-Object -TypeName System.Windows.Automation.PropertyCondition -ArgumentList @(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Button
+    )
+
+    # Native JS dialog windows have no Document control. Search them before the
+    # main browser window to avoid matching similarly named page controls.
+    $dialogWindows = New-Object System.Collections.ArrayList
+    $browserWindows = New-Object System.Collections.ArrayList
+    foreach ($window in @($Windows)) {
+        $document = $null
+        try {
+            $document = $window.FindFirst(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $documentCondition
+            )
+        } catch {
+        }
+
+        if ($null -eq $document) {
+            [void]$dialogWindows.Add($window)
+        } else {
+            [void]$browserWindows.Add($window)
+        }
+    }
+
+    $orderedWindows = @(
+        $dialogWindows | ForEach-Object { $_ }
+        $browserWindows | ForEach-Object { $_ }
+    )
+    foreach ($window in $orderedWindows) {
+        try {
+            $buttons = $window.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $buttonCondition
+            )
+            foreach ($button in $buttons) {
+                $buttonName = [string]$button.Current.Name
+                foreach ($name in $Names) {
+                    if ([string]::Equals($buttonName, [string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        return $button
+                    }
+                }
+            }
+        } catch {
+        }
+    }
+
+    return $null
+}
+
+function Get-PseUiaContainingWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Element
+    )
+
+    Initialize-PseUia
+
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $current = $Element
+    while ($null -ne $current) {
+        try {
+            $controlType = $current.GetCurrentPropertyValue(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+            )
+            if ($controlType -eq [System.Windows.Automation.ControlType]::Window) {
+                return $current
+            }
+            $current = $walker.GetParent($current)
+        } catch {
+            return $null
+        }
+    }
+
+    return $null
+}
+
+function Invoke-PseNativeDialogRescue {
+    param(
+        [AllowNull()]
+        $State,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$Accept,
+
+        [AllowNull()]
+        $Text
+    )
+
+    Initialize-PseUia
+
+    $browserPid = $null
+    if ($null -ne $State) {
+        if ($State -is [System.Collections.IDictionary]) {
+            if ($State.Contains('pid') -and $null -ne $State['pid']) {
+                $browserPid = [int]$State['pid']
+            }
+        } elseif ($null -ne $State.PSObject.Properties['pid'] -and $null -ne $State.pid) {
+            $browserPid = [int]$State.pid
+        }
+    }
+
+    $windows = @(Get-PseUiaEdgeWindows -BrowserPid $browserPid)
+    if ($windows.Count -eq 0) {
+        throw 'no Edge window found - rescue requires a visible (non-headless) browser'
+    }
+
+    if ($Accept) {
+        $button = Find-PseNativeDialogButton -Windows $windows -Names @('OK')
+    } else {
+        # Build the Japanese Cancel label from code points because these source
+        # files intentionally use UTF-8 without a BOM for PowerShell 5.1.
+        $japaneseCancel = -join @(
+            [char]0x30AD,
+            [char]0x30E3,
+            [char]0x30F3,
+            [char]0x30BB,
+            [char]0x30EB
+        )
+        $button = Find-PseNativeDialogButton -Windows $windows -Names @('Cancel', $japaneseCancel)
+        if ($null -eq $button) {
+            $button = Find-PseNativeDialogButton -Windows $windows -Names @('OK')
+        }
+    }
+
+    if ($null -eq $button) {
+        throw 'no native dialog found'
+    }
+
+    if ($Accept -and $null -ne $Text) {
+        try {
+            $window = Get-PseUiaContainingWindow -Element $button
+            if ($null -ne $window) {
+                $editCondition = New-Object -TypeName System.Windows.Automation.PropertyCondition -ArgumentList @(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Edit
+                )
+                $edit = $window.FindFirst(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    $editCondition
+                )
+                if ($null -ne $edit) {
+                    $valuePattern = $edit.GetCurrentPattern(
+                        [System.Windows.Automation.ValuePattern]::Pattern
+                    )
+                    $valuePattern.SetValue([string]$Text)
+                }
+            }
+        } catch {
+        }
+    }
+
+    $clickedName = [string]$button.Current.Name
+    $invokePattern = $button.GetCurrentPattern(
+        [System.Windows.Automation.InvokePattern]::Pattern
+    )
+    $invokePattern.Invoke()
+    return "clicked '$clickedName'"
 }
 
 # Source: src/60-snapshot.ps1
@@ -3579,9 +3781,34 @@ function Invoke-PseCmdDialog {
 
     $accept = $Parsed.Options.ContainsKey('accept')
     $dismiss = $Parsed.Options.ContainsKey('dismiss')
+    $rescue = $Parsed.Options.ContainsKey('rescue')
     if ($accept -and $dismiss) {
         Write-PseCliError 'Error: -Accept and -Dismiss cannot be used together'
         return 1
+    }
+
+    if ($rescue) {
+        $stateForRescue = Read-PseState
+        $policyForRescue = Get-PseDialogPolicy -State $stateForRescue
+        $rescueAccept = $accept
+        $rescueText = $null
+        if (-not $accept -and -not $dismiss) {
+            $rescueAccept = $policyForRescue.mode -eq 'accept'
+            if ($rescueAccept) {
+                $rescueText = $policyForRescue.text
+            }
+        } elseif ($accept -and $Parsed.Options.ContainsKey('text')) {
+            $rescueText = [string]$Parsed.Options['text']
+        }
+
+        try {
+            $result = Invoke-PseNativeDialogRescue -State $stateForRescue -Accept $rescueAccept -Text $rescueText
+            Write-Output "Rescued native dialog: $result"
+            return 0
+        } catch {
+            Write-PseCliError "Error: $($_.Exception.Message)"
+            return 1
+        }
     }
 
     if ($accept -or $dismiss) {
@@ -3804,6 +4031,7 @@ function ConvertFrom-PseArgs {
         submit = $true
         accept = $true
         dismiss = $true
+        rescue = $true
         noquietflags = $true
     }
 
@@ -3881,7 +4109,7 @@ Commands:
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
-  dialog [-Accept [-Text <reply>] | -Dismiss]
+  dialog [-Accept [-Text <reply>] | -Dismiss] [-Rescue]
   cdp <method> [<params-json>]
   help
 '@

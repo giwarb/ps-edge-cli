@@ -67,7 +67,7 @@ Stopped.
 | `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | 時間待ち、body text の出現/消滅、または CSS selector の出現/消滅をポーリングします。指定した条件はすべて満たす必要があります。 |
 | `tabs` | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | タブ一覧、新規作成、選択、終了。`select` は状態の `targetId` を更新します。 |
 | `console` | `console` | ページ内で捕捉した console log を表示します。best effort です。 |
-| `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` | JS hook + CDP safety net による dialog 自動応答 policy を表示・設定します。native dialog も command を block せず、`# dialog: ...` footer で報告されます。`beforeunload` は navigation 続行のため常に accept されます。 |
+| `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` / `dialog -Rescue [-Accept [-Text <reply>] \| -Dismiss]` | JS hook + CDP safety net による dialog 自動応答 policy を表示・設定します。接続していない間に開いた visible Edge の native dialog は、Windows UI Automation を使う `-Rescue` で閉じられます。`beforeunload` は navigation 続行のため常に accept されます。 |
 | `cdp` | `cdp <method> [<params-json>]` | 生の CDP 呼び出しです。例: `cdp Page.navigate '{"url":"https://example.com"}'`。 |
 | `help` | `help` | usage を表示します。不明な command でも stderr に usage を表示します。 |
 

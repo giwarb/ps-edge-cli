@@ -16,6 +16,7 @@ function ConvertFrom-PseArgs {
         submit = $true
         accept = $true
         dismiss = $true
+        rescue = $true
         noquietflags = $true
     }
 
@@ -93,7 +94,7 @@ Commands:
   wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]
   tabs [list|new|select|close]
   console
-  dialog [-Accept [-Text <reply>] | -Dismiss]
+  dialog [-Accept [-Text <reply>] | -Dismiss] [-Rescue]
   cdp <method> [<params-json>]
   help
 '@
