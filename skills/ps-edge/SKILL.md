@@ -50,7 +50,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 | Pixels | `screenshot [<path>] [-FullPage]` |
 | PDF | `pdf [<path>]` |
 | Resize viewport | `resize <width> <height>` |
-| Click | `click <ref> [-Right] [-Double]` |
+| Click | `click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]` |
 | Type into field | `type <ref> <text> [-Submit]` (`-Submit` presses Enter after) |
 | Set value directly | `fill <ref> <value>` (fires input+change; fastest for forms) |
 | Keyboard | `press Enter` / `press Tab` / `press Control+A` / `press Delete` ... |
@@ -154,7 +154,11 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   then run `start -Attach`; `stop` only detaches and leaves that browser running.
   Do not try `start -Attach` merely because ordinary Edge windows are already open.
 - For report downloads, use `start -DownloadDir <path>` or the default state download
-  directory, then run `downloads` to list completed and in-progress files.
+  directory, then trigger them with `click <ref> -WaitDownload [-AcceptDialog]`.
+  `completed` is safe to treat as success. `canceled`, `in-progress`, and
+  `not-observed` exit 1: check `downloads` before retrying, because the original click
+  may still have started a non-idempotent server job. `-AcceptDialog` accepts dialogs
+  for this click only and does not change the persisted dialog policy.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
 - Dialogs opened during a command are handled by the injected JS hook or CDP safety

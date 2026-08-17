@@ -15,8 +15,10 @@ function ConvertFrom-PseArgs {
         double = $true
         submit = $true
         accept = $true
+        acceptdialog = $true
         dismiss = $true
         rescue = $true
+        waitdownload = $true
         noquietflags = $true
     }
 
@@ -82,7 +84,7 @@ Commands:
   screenshot [<path>] [-FullPage]
   pdf [<path>]
   resize <width> <height>
-  click <ref> [-Right] [-Double]
+  click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]
   type <ref> <text> [-Submit]
   fill <ref> <value>
   press <key>

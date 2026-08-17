@@ -733,6 +733,9 @@ function Invoke-PseCmdClick {
         throw 'click requires a ref'
     }
 
+    $waitDownload = $Parsed.Options.ContainsKey('waitdownload')
+    $acceptDialog = $Parsed.Options.ContainsKey('acceptdialog')
+
     $ref = [string]$Parsed.Positional[0]
     $button = 'left'
     if ($Parsed.Options.ContainsKey('right')) {
@@ -743,16 +746,73 @@ function Invoke-PseCmdClick {
         $clickCount = 2
     }
 
+    if (-not $waitDownload -and -not $acceptDialog) {
+        $session = $null
+        try {
+            $session = Get-PseSession
+            $rect = Resolve-PseRef -Session $session -Ref $ref
+            Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+            Write-Output "Clicked $ref"
+            Write-PseLocation -Session $session
+            return 0
+        } finally {
+            Close-PseSession -Session $session
+        }
+    }
+
+    $downloadTimeoutSec = 300
+    if ($waitDownload) {
+        $downloadTimeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'downloadtimeoutsec' -Default 300)
+        if ($downloadTimeoutSec -lt 1) {
+            throw '-DownloadTimeoutSec must be a positive integer'
+        }
+    }
+
+    $state = Read-PseState
+    if ($null -eq $state -or -not $state.port) {
+        throw "browser is not running - run 'start' first"
+    }
+    $dialogPolicy = Get-PseDialogPolicy -State $state
+    if ($acceptDialog) {
+        $dialogPolicy['mode'] = 'accept'
+    }
+
     $session = $null
+    $watch = $null
     try {
-        $session = Get-PseSession
-        $rect = Resolve-PseRef -Session $session -Ref $ref
-        Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
-        Write-Output "Clicked $ref"
-        Write-PseLocation -Session $session
+        if ($waitDownload) {
+            $watch = Open-PseDownloadWatch -State $state -DialogPolicy $dialogPolicy
+        }
+
+        try {
+            $session = Get-PseSession
+            if ($acceptDialog) {
+                $session.Conn.DialogPolicy = $dialogPolicy
+                Set-PseDialogPolicyInPage -Session $session -Policy $dialogPolicy
+            }
+            $rect = Resolve-PseRef -Session $session -Ref $ref
+            Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+            Write-Output "Clicked $ref"
+            Write-PseLocation -Session $session
+        } finally {
+            Close-PseSession -Session $session
+            $session = $null
+        }
+
+        if ($waitDownload) {
+            $downloadResult = Wait-PseDownloadWatch -Watch $watch -TimeoutSec $downloadTimeoutSec
+            Write-PseDownloadEventLog -Port $watch.Port -Downloads $downloadResult.Downloads
+            Write-PseDownloadWaitResult -Result $downloadResult -Watch $watch -TimeoutSec $downloadTimeoutSec
+            if ($downloadResult.State -ne 'completed') {
+                return 1
+            }
+        }
         return 0
     } finally {
         Close-PseSession -Session $session
+        if ($null -ne $watch) {
+            Close-PseCdp -Conn $watch.Conn
+        }
     }
 }
 

@@ -9,6 +9,7 @@ Generation source list:
 - src/20-state.ps1
 - src/30-cdp.ps1
 - src/40-browser.ps1
+- src/45-download.ps1
 - src/50-session.ps1
 - src/55-uia.ps1
 - src/60-snapshot.ps1
@@ -1000,6 +1001,309 @@ function Stop-PseBrowser {
     } finally {
         Clear-PseState
     }
+}
+
+# Source: src/45-download.ps1
+function Open-PseDownloadWatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        $State,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$DialogPolicy
+    )
+
+    if ($null -eq $State -or -not $State.port) {
+        throw "browser is not running - run 'start' first"
+    }
+
+    try {
+        $version = Invoke-PseHttpJson -Port ([int]$State.port) -Path '/json/version'
+    } catch {
+        throw "browser is not running - run 'start' first"
+    }
+    if ($null -eq $version -or -not $version.webSocketDebuggerUrl) {
+        throw 'browser WebSocket URL was not available'
+    }
+
+    $downloadDir = $null
+    if ($null -ne $State.PSObject.Properties['downloadDir'] -and -not [string]::IsNullOrWhiteSpace([string]$State.downloadDir)) {
+        $downloadDir = [string]$State.downloadDir
+    }
+
+    $conn = $null
+    try {
+        $conn = Connect-PseCdp -WebSocketUrl $version.webSocketDebuggerUrl
+        $conn.DialogPolicy = $DialogPolicy
+        [void](Send-PseCdp -Conn $conn -Method 'Target.setAutoAttach' -Params @{
+            autoAttach = $true
+            waitForDebuggerOnStart = $false
+            flatten = $true
+        } -TimeoutSec 5)
+
+        if ($null -ne $downloadDir) {
+            [void](Send-PseCdp -Conn $conn -Method 'Browser.setDownloadBehavior' -Params @{
+                behavior = 'allow'
+                downloadPath = $downloadDir
+                eventsEnabled = $true
+            } -TimeoutSec 5)
+        } else {
+            [void](Send-PseCdp -Conn $conn -Method 'Browser.setDownloadBehavior' -Params @{
+                behavior = 'default'
+                eventsEnabled = $true
+            } -TimeoutSec 5)
+        }
+
+        return [pscustomobject]@{
+            Conn = $conn
+            Port = [int]$State.port
+            DownloadDir = $downloadDir
+        }
+    } catch {
+        if ($null -ne $conn) {
+            Close-PseCdp -Conn $conn
+        }
+        throw
+    }
+}
+
+function Wait-PseDownloadWatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Watch,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSec
+    )
+
+    $downloadsByGuid = @{}
+    $downloads = New-Object System.Collections.ArrayList
+    $terminalDownload = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $message = $null
+        if ($Watch.Conn.Events.Count -gt 0) {
+            $message = $Watch.Conn.Events[0]
+            $Watch.Conn.Events.RemoveAt(0)
+        } else {
+            $remaining = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
+            if ($remaining -lt 1) {
+                $remaining = 1
+            }
+
+            try {
+                $message = Receive-PseCdpMessage -Conn $Watch.Conn -TimeoutSec $remaining
+            } catch {
+                if ($_.Exception.Message -match '^Timed out after \d+ seconds waiting for a CDP message\.$') {
+                    break
+                }
+                throw
+            }
+        }
+
+        if ($null -eq $message) {
+            continue
+        }
+        if (Invoke-PseCdpAutoHandler -Conn $Watch.Conn -Message $message) {
+            continue
+        }
+        if ($null -ne $message.PSObject.Properties['id']) {
+            continue
+        }
+
+        if ($message.method -eq 'Browser.downloadWillBegin') {
+            $p = $message.params
+            $guid = [string]$p.guid
+            if ([string]::IsNullOrWhiteSpace($guid)) {
+                continue
+            }
+
+            if ($downloadsByGuid.ContainsKey($guid)) {
+                $download = $downloadsByGuid[$guid]
+                $download.Filename = [string]$p.suggestedFilename
+                $download.Url = [string]$p.url
+            } else {
+                $download = [pscustomobject]@{
+                    Guid = $guid
+                    Filename = [string]$p.suggestedFilename
+                    Url = [string]$p.url
+                    State = 'in-progress'
+                    ReceivedBytes = [long]0
+                    TotalBytes = [long]0
+                    FilePath = $null
+                }
+                $downloadsByGuid[$guid] = $download
+                [void]$downloads.Add($download)
+            }
+            continue
+        }
+
+        if ($message.method -ne 'Browser.downloadProgress') {
+            continue
+        }
+
+        $p = $message.params
+        $guid = [string]$p.guid
+        if (-not $downloadsByGuid.ContainsKey($guid)) {
+            continue
+        }
+
+        $download = $downloadsByGuid[$guid]
+        if ($null -ne $p.PSObject.Properties['receivedBytes']) {
+            $download.ReceivedBytes = [long]$p.receivedBytes
+        }
+        if ($null -ne $p.PSObject.Properties['totalBytes']) {
+            $download.TotalBytes = [long]$p.totalBytes
+        }
+        if ($null -ne $p.PSObject.Properties['filePath'] -and -not [string]::IsNullOrWhiteSpace([string]$p.filePath)) {
+            $download.FilePath = [string]$p.filePath
+        }
+
+        if ($p.state -eq 'completed') {
+            $download.State = 'completed'
+            $terminalDownload = $download
+            break
+        }
+        if ($p.state -eq 'canceled') {
+            $download.State = 'canceled'
+            $terminalDownload = $download
+            break
+        }
+        $download.State = 'in-progress'
+    }
+
+    $downloadArray = @($downloads | ForEach-Object { $_ })
+    if ($null -ne $terminalDownload) {
+        return [pscustomobject]@{
+            State = $terminalDownload.State
+            Download = $terminalDownload
+            Downloads = $downloadArray
+        }
+    }
+
+    if ($downloads.Count -eq 0) {
+        return [pscustomobject]@{
+            State = 'not-observed'
+            Download = $null
+            Downloads = $downloadArray
+        }
+    }
+
+    foreach ($download in $downloads) {
+        $download.State = 'in-progress'
+    }
+    return [pscustomobject]@{
+        State = 'in-progress'
+        Download = $downloads[0]
+        Downloads = $downloadArray
+    }
+}
+
+function Get-PseDownloadEventLogPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port
+    )
+
+    return Join-Path (Get-PseStateDir) "downloads-events-$Port.jsonl"
+}
+
+function Write-PseDownloadEventLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Downloads
+    )
+
+    if ($Downloads.Count -eq 0) {
+        return
+    }
+
+    $path = Get-PseDownloadEventLogPath -Port $Port
+    $lines = New-Object System.Collections.ArrayList
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        foreach ($line in [System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::UTF8)) {
+            [void]$lines.Add($line)
+        }
+    }
+
+    foreach ($download in $Downloads) {
+        $entry = [ordered]@{
+            guid = $download.Guid
+            filename = $download.Filename
+            url = $download.Url
+            state = $download.State
+            receivedBytes = [long]$download.ReceivedBytes
+            totalBytes = [long]$download.TotalBytes
+            filePath = $download.FilePath
+            endedAt = [DateTime]::UtcNow.ToString('o')
+        }
+        [void]$lines.Add((ConvertTo-PseJson $entry))
+    }
+
+    $keptLines = @($lines | Select-Object -Last 200 | ForEach-Object { [string]$_ })
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [void][System.IO.File]::WriteAllLines($path, [string[]]$keptLines, $encoding)
+}
+
+function Write-PseDownloadWaitResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result,
+
+        [Parameter(Mandatory = $true)]
+        $Watch,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSec
+    )
+
+    if ($Result.State -eq 'not-observed') {
+        Write-Output "download: [not-observed] no download events within $TimeoutSec sec"
+        Write-Output "# note: the click may still trigger a download later; check 'downloads' before retrying non-idempotent actions"
+        return
+    }
+
+    $download = $Result.Download
+    $filename = [string]$download.Filename
+    if ([string]::IsNullOrWhiteSpace($filename)) {
+        $filename = '(unknown)'
+    }
+
+    if ($Result.State -eq 'completed') {
+        Write-Output "download: $filename [completed] $($download.ReceivedBytes) bytes"
+        Write-Output "# guid: $($download.Guid)"
+
+        $path = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$download.FilePath)) {
+            $path = [string]$download.FilePath
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$Watch.DownloadDir)) {
+            $path = Join-Path ([string]$Watch.DownloadDir) $filename
+        }
+
+        if ($null -ne $path) {
+            $suffix = ''
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $suffix = " (file not found - it may have been renamed or removed; run 'downloads')"
+            }
+            Write-Output "# path: $path$suffix"
+        }
+        return
+    }
+
+    if ($Result.State -eq 'canceled') {
+        Write-Output "download: $filename [canceled]"
+        Write-Output "# guid: $($download.Guid)"
+        return
+    }
+
+    Write-Output "download: $filename [in-progress] $($download.ReceivedBytes)/$($download.TotalBytes) bytes"
+    Write-Output "# guid: $($download.Guid)"
+    Write-Output "# note: still downloading after $TimeoutSec sec; check 'downloads' before retrying"
 }
 
 # Source: src/50-session.ps1
@@ -3564,6 +3868,9 @@ function Invoke-PseCmdClick {
         throw 'click requires a ref'
     }
 
+    $waitDownload = $Parsed.Options.ContainsKey('waitdownload')
+    $acceptDialog = $Parsed.Options.ContainsKey('acceptdialog')
+
     $ref = [string]$Parsed.Positional[0]
     $button = 'left'
     if ($Parsed.Options.ContainsKey('right')) {
@@ -3574,16 +3881,73 @@ function Invoke-PseCmdClick {
         $clickCount = 2
     }
 
+    if (-not $waitDownload -and -not $acceptDialog) {
+        $session = $null
+        try {
+            $session = Get-PseSession
+            $rect = Resolve-PseRef -Session $session -Ref $ref
+            Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+            Write-Output "Clicked $ref"
+            Write-PseLocation -Session $session
+            return 0
+        } finally {
+            Close-PseSession -Session $session
+        }
+    }
+
+    $downloadTimeoutSec = 300
+    if ($waitDownload) {
+        $downloadTimeoutSec = [int](Get-PseOptionValue -Parsed $Parsed -Name 'downloadtimeoutsec' -Default 300)
+        if ($downloadTimeoutSec -lt 1) {
+            throw '-DownloadTimeoutSec must be a positive integer'
+        }
+    }
+
+    $state = Read-PseState
+    if ($null -eq $state -or -not $state.port) {
+        throw "browser is not running - run 'start' first"
+    }
+    $dialogPolicy = Get-PseDialogPolicy -State $state
+    if ($acceptDialog) {
+        $dialogPolicy['mode'] = 'accept'
+    }
+
     $session = $null
+    $watch = $null
     try {
-        $session = Get-PseSession
-        $rect = Resolve-PseRef -Session $session -Ref $ref
-        Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
-        Write-Output "Clicked $ref"
-        Write-PseLocation -Session $session
+        if ($waitDownload) {
+            $watch = Open-PseDownloadWatch -State $state -DialogPolicy $dialogPolicy
+        }
+
+        try {
+            $session = Get-PseSession
+            if ($acceptDialog) {
+                $session.Conn.DialogPolicy = $dialogPolicy
+                Set-PseDialogPolicyInPage -Session $session -Policy $dialogPolicy
+            }
+            $rect = Resolve-PseRef -Session $session -Ref $ref
+            Send-PseMouseClick -Session $session -X ([double]$rect.x) -Y ([double]$rect.y) -Button $button -ClickCount $clickCount
+            Write-Output "Clicked $ref"
+            Write-PseLocation -Session $session
+        } finally {
+            Close-PseSession -Session $session
+            $session = $null
+        }
+
+        if ($waitDownload) {
+            $downloadResult = Wait-PseDownloadWatch -Watch $watch -TimeoutSec $downloadTimeoutSec
+            Write-PseDownloadEventLog -Port $watch.Port -Downloads $downloadResult.Downloads
+            Write-PseDownloadWaitResult -Result $downloadResult -Watch $watch -TimeoutSec $downloadTimeoutSec
+            if ($downloadResult.State -ne 'completed') {
+                return 1
+            }
+        }
         return 0
     } finally {
         Close-PseSession -Session $session
+        if ($null -ne $watch) {
+            Close-PseCdp -Conn $watch.Conn
+        }
     }
 }
 
@@ -4071,8 +4435,10 @@ function ConvertFrom-PseArgs {
         double = $true
         submit = $true
         accept = $true
+        acceptdialog = $true
         dismiss = $true
         rescue = $true
+        waitdownload = $true
         noquietflags = $true
     }
 
@@ -4138,7 +4504,7 @@ Commands:
   screenshot [<path>] [-FullPage]
   pdf [<path>]
   resize <width> <height>
-  click <ref> [-Right] [-Double]
+  click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]
   type <ref> <text> [-Submit]
   fill <ref> <value>
   press <key>

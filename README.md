@@ -55,7 +55,7 @@ Stopped.
 | `screenshot` | `screenshot [<path>] [-FullPage]` | PNG スクリーンショットを保存します。path 省略時は CWD に `screenshot-<timestamp>.png`。 |
 | `pdf` | `pdf [<path>]` | 現在のページを PDF として保存します。path 省略時は CWD に `page-<timestamp>.pdf`。headless Edge が必要です。 |
 | `resize` | `resize <width> <height>` | 現在のページの viewport を正の整数サイズに設定します。 |
-| `click` | `click <ref> [-Right] [-Double]` | ref の要素を表示範囲へスクロールし、中央座標をクリックします。 |
+| `click` | `click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]` | ref の要素をクリックします。`-WaitDownload` は click 前から CDP download event を監視し、completed だけを成功とします。`-AcceptDialog` はこの呼び出し中だけ dialog を accept します。 |
 | `type` | `type <ref> <text> [-Submit]` | 要素へフォーカスしてテキストを挿入します。`-Submit` は Enter も送ります。 |
 | `fill` | `fill <ref> <value>` | JS で `.value` を設定し、`input` と `change` を発火します。 |
 | `press` | `press <key>` | キーイベントを送ります。例: `Enter`, `Tab`, `Escape`, `Control+A`。 |

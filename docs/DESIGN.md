@@ -17,6 +17,7 @@ src/NN-name.ps1      # function-only files (NO top-level side effects), NN = loa
   20-state.ps1       #   session state file (%TEMP%\ps-edge\state.json)
   30-cdp.ps1         #   CDP WebSocket client + HTTP endpoints (/json/*)
   40-browser.ps1     #   Edge process lifecycle (find/launch/stop)
+  45-download.ps1    #   browser-level download event watch + JSONL event log
   50-session.ps1     #   connect to current target, page helpers
   60-snapshot.ps1    #   ref-based page snapshot (injected JS)
   70-actions.ps1     #   click/type/fill/press/hover/select/wait/console
@@ -82,7 +83,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | screenshot | `screenshot [<path>] [-FullPage]` | `Page.captureScreenshot` (png). Default path `screenshot-<timestamp>.png` in CWD. Prints saved path. |
 | pdf | `pdf [<path>]` | `Page.printToPDF` with backgrounds. Default path `page-<timestamp>.pdf` in CWD. Requires a headless session. |
 | resize | `resize <width> <height>` | `Emulation.setDeviceMetricsOverride` on the current page target; positive integer dimensions only. |
-| click | `click <ref> [-Right] [-Double]` | Resolve ref, scrollIntoView, center coords, `Input.dispatchMouseEvent`. |
+| click | `click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]` | Resolve ref, scrollIntoView, center coords, `Input.dispatchMouseEvent`. `-WaitDownload` opens a browser-level event watch before clicking and exits 0 only for a completed download. `-AcceptDialog` overrides both page hooks and CDP dialog handling for this invocation without persisting policy. |
 | type | `type <ref> <text> [-Submit]` | Focus element, `Input.insertText`; `-Submit` sends Enter key events after. |
 | fill | `fill <ref> <value>` | JS: set `.value`, dispatch `input`+`change`. For fast form filling. |
 | press | `press <key>` | `Input.dispatchKeyEvent`. Keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, plus `Control+A` style combos. |
@@ -148,6 +149,27 @@ Rules:
   connection object for `Wait-PseCdpEvent`.
 - `ConvertTo-Json -Depth 12 -Compress` for outbound payloads.
 - No PS7-only syntax: no `&&`/`||`, no ternary, no `??`, no `?.`.
+
+## Download watch
+
+- `click -WaitDownload` connects to the browser WebSocket before opening the page
+  session, enables flattened `Target.setAutoAttach`, and subscribes to
+  `Browser.downloadWillBegin` / `Browser.downloadProgress` before dispatching the
+  click. Both the browser watch and page connection use the invocation's dialog
+  policy, so popup and OOPIF dialogs can be answered while the watch is active.
+- Immediately before the click, the watch re-asserts `Browser.setDownloadBehavior`
+  with `eventsEnabled:true`. Configured sessions use `allow` plus the saved
+  `downloadDir`; attached sessions use `default` and only report a path when CDP
+  supplies one.
+- The watch distinguishes `completed`, `canceled`, timeout while `in-progress`, and
+  timeout with no `downloadWillBegin` (`not-observed`). Only `completed` exits 0,
+  preventing callers from treating an ambiguous result as permission to retry a
+  non-idempotent click.
+- Each observed download is appended as BOM-free JSONL to
+  `%TEMP%\ps-edge\downloads-events-<port>.jsonl`, capped at the newest 200 lines.
+  Records contain guid, filename, URL, terminal/observed state, byte counts, CDP
+  file path when available, and an ISO 8601 end timestamp. The `downloads` command
+  will consume this log in a later integration phase.
 
 ## Browser prompt policy
 
