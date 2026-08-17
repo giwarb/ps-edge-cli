@@ -43,7 +43,7 @@ tree with `[ref=eN]` handles) and act with ref-based commands (`click e3`,
 |---|---|
 | Launch browser | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` |
 | Shut down | `stop` — Check liveness: `status` |
-| Downloads | `downloads [-Dir <path>]` |
+| Downloads | `downloads [-Dir <path>]` — list directory files and merge tracked `click -WaitDownload` events |
 | Navigate | `goto <url>` / `back` / `forward` / `reload` |
 | Read page context | `snapshot [-Selector <css>] [-MaxChars 24000]` |
 | Inspect form controls (preferred for forms) | `inspect [-Selector <css>] [-MaxItems 200]` |
@@ -157,8 +157,18 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   directory, then trigger them with `click <ref> -WaitDownload [-AcceptDialog]`.
   `completed` is safe to treat as success. `canceled`, `in-progress`, and
   `not-observed` exit 1: check `downloads` before retrying, because the original click
-  may still have started a non-idempotent server job. `-AcceptDialog` accepts dialogs
-  for this click only and does not change the persisted dialog policy.
+  may still have started a non-idempotent server job. `downloads` merges current files
+  with the `click -WaitDownload` event log. A normal file row means the file is still
+  present. `event: ... [completed] ... file missing` means completion was tracked but
+  the file was moved or removed; treat the download as completed and do not retry just
+  because the directory is empty. `event: ... [canceled]` means the browser reported
+  cancellation, while `event: ... [in-progress last-observed ...]` means wait and check
+  again; before retrying either one, verify that repeating the originating action is
+  safe. `No download files and no tracked download events.` is unknown state, not proof
+  of failure: only `click -WaitDownload` records events, so an untracked download may
+  still have occurred. Verify the business result before retrying a non-idempotent
+  action. `-AcceptDialog` accepts dialogs for this click only and does not change the
+  persisted dialog policy.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
 - Dialogs opened during a command are handled by the injected JS hook or CDP safety

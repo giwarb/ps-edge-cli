@@ -3446,9 +3446,9 @@ function Invoke-PseCmdDownloads {
         [hashtable]$Parsed
     )
 
+    $state = Read-PseState
     $dir = Get-PseOptionValue -Parsed $Parsed -Name 'dir' -Default $null
     if ([string]::IsNullOrWhiteSpace($dir)) {
-        $state = Read-PseState
         if ($null -ne $state -and $null -ne $state.PSObject.Properties['downloadDir']) {
             $dir = $state.downloadDir
         }
@@ -3465,9 +3465,87 @@ function Invoke-PseCmdDownloads {
     }
 
     $files = @(Get-ChildItem -LiteralPath $absoluteDir -File | Sort-Object LastWriteTime -Descending)
-    if ($files.Count -eq 0) {
-        Write-Output 'No downloads yet.'
-    } else {
+    $listedNames = @{}
+    foreach ($file in $files) {
+        $listedNames[$file.Name] = $true
+    }
+
+    $eventLogPath = $null
+    $eventLogConsulted = $false
+    $eventEntries = @()
+    if ($null -ne $state -and $null -ne $state.PSObject.Properties['port']) {
+        $eventPort = 0
+        if ([int]::TryParse([string]$state.port, [ref]$eventPort) -and $eventPort -gt 0) {
+            $candidateEventLogPath = Get-PseDownloadEventLogPath -Port $eventPort
+            if (Test-Path -LiteralPath $candidateEventLogPath -PathType Leaf) {
+                $eventLogPath = $candidateEventLogPath
+                $eventLogConsulted = $true
+                $eventsByGuid = @{}
+                try {
+                    $eventLines = [System.IO.File]::ReadAllLines($eventLogPath, [System.Text.Encoding]::UTF8)
+                    for ($lineIndex = 0; $lineIndex -lt $eventLines.Count; $lineIndex++) {
+                        $line = $eventLines[$lineIndex]
+                        if ([string]::IsNullOrWhiteSpace($line)) {
+                            continue
+                        }
+                        try {
+                            $event = $line | ConvertFrom-Json -ErrorAction Stop
+                        } catch {
+                            continue
+                        }
+                        if ($null -eq $event -or $event -is [System.Array]) {
+                            continue
+                        }
+
+                        $guid = ''
+                        if ($null -ne $event.PSObject.Properties['guid']) {
+                            $guid = [string]$event.guid
+                        }
+                        $eventsByGuid[$guid] = [pscustomobject]@{
+                            Sequence = $lineIndex
+                            Event = $event
+                        }
+                    }
+                    $eventEntries = @($eventsByGuid.Values | Sort-Object Sequence -Descending)
+                } catch {
+                    $eventEntries = @()
+                }
+            }
+        }
+    }
+
+    $eventsToPrint = New-Object System.Collections.ArrayList
+    foreach ($eventEntry in $eventEntries) {
+        $event = $eventEntry.Event
+        $filename = ''
+        if ($null -ne $event.PSObject.Properties['filename']) {
+            $filename = [string]$event.filename
+        }
+        $filePath = ''
+        if ($null -ne $event.PSObject.Properties['filePath']) {
+            $filePath = [string]$event.filePath
+        }
+
+        $accountedFor = (-not [string]::IsNullOrWhiteSpace($filename) -and $listedNames.ContainsKey($filename))
+        if (-not $accountedFor -and -not [string]::IsNullOrWhiteSpace($filePath)) {
+            try {
+                $filePathName = [System.IO.Path]::GetFileName($filePath)
+                $accountedFor = (-not [string]::IsNullOrWhiteSpace($filePathName) -and $listedNames.ContainsKey($filePathName))
+            } catch {
+                $accountedFor = $false
+            }
+        }
+        if ($accountedFor) {
+            continue
+        }
+
+        [void]$eventsToPrint.Add($event)
+        if ($eventsToPrint.Count -ge 20) {
+            break
+        }
+    }
+
+    if ($files.Count -gt 0) {
         foreach ($file in $files) {
             $suffix = ''
             if ($file.Name.EndsWith('.crdownload', [System.StringComparison]::OrdinalIgnoreCase) -or $file.Name.EndsWith('.partial', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -3477,7 +3555,34 @@ function Invoke-PseCmdDownloads {
         }
     }
 
+    foreach ($event in $eventsToPrint) {
+        $filename = [string]$event.filename
+        if ([string]::IsNullOrWhiteSpace($filename)) {
+            $filename = '(unknown)'
+        }
+        $stateName = [string]$event.state
+        if ([string]::Equals($stateName, 'completed', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Output ("event: {0} [completed] {1} bytes - file missing (moved or removed)" -f $filename, $event.receivedBytes)
+            $filePath = [string]$event.filePath
+            if (-not [string]::IsNullOrWhiteSpace($filePath)) {
+                Write-Output "# path: $filePath"
+            }
+        } elseif ([string]::Equals($stateName, 'canceled', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Output "event: $filename [canceled]"
+        } else {
+            Write-Output ("event: {0} [in-progress last-observed {1}/{2} bytes]" -f $filename, $event.receivedBytes, $event.totalBytes)
+        }
+    }
+
+    if ($files.Count -eq 0 -and $eventsToPrint.Count -eq 0) {
+        Write-Output 'No download files and no tracked download events.'
+        Write-Output "# note: only 'click -WaitDownload' records events; an untracked download may still have occurred"
+    }
+
     Write-Output "# dir: $absoluteDir"
+    if ($eventLogConsulted) {
+        Write-Output "# events: $eventLogPath"
+    }
     return 0
 }
 

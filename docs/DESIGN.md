@@ -74,7 +74,7 @@ All functions use the `Pse` prefix (Verb-PseNoun), e.g. `Start-PseBrowser`,
 | start | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` | Launch Edge with `--remote-debugging-port`, isolated profile, wait for `/json/version`, configure downloads, save state. Quiet flags are enabled by default; browser permission prompts are denied instead of displayed and crash-restore UI is hidden. `-NoQuietFlags` restores the minimal launch flags, and repeated `-ExtraArg <arg>` passes raw Chromium switches. `-OktaFastPassOrigin` pre-allows known Okta external protocols in the isolated profile and grants local/loopback network permissions through CDP for one exact HTTPS origin. `-Attach` writes state for an existing CDP endpoint and never launches or changes browser settings. |
 | stop | `stop` | `Browser.close` via CDP, fallback kill PID, clear state. |
 | status | `status` | Show port/pid/version/tabs, or "not running". |
-| downloads | `downloads [-Dir <path>]` | List files in the configured download directory (or explicit `-Dir`), newest first, marking partial downloads. |
+| downloads | `downloads [-Dir <path>]` | List files in the configured download directory (or explicit `-Dir`), newest first, marking partial downloads, then merge tracked `click -WaitDownload` events so canceled, last-observed in-progress, and completed-but-missing downloads remain visible. |
 | goto | `goto <url>` | `Page.navigate` + wait for load event. Bare domains get `https://`. |
 | back / forward | `back` / `forward` | History navigation via `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`. |
 | reload | `reload` | `Page.reload` + wait for load. |
@@ -168,8 +168,16 @@ Rules:
 - Each observed download is appended as BOM-free JSONL to
   `%TEMP%\ps-edge\downloads-events-<port>.jsonl`, capped at the newest 200 lines.
   Records contain guid, filename, URL, terminal/observed state, byte counts, CDP
-  file path when available, and an ISO 8601 end timestamp. The `downloads` command
-  will consume this log in a later integration phase.
+  file path when available, and an ISO 8601 end timestamp.
+- `downloads` reads that JSONL log using the current state's port, ignores malformed
+  lines, and keeps the last record for each guid. Events whose filename or recorded
+  path basename matches a current directory file are accounted for by the normal file
+  listing. Remaining events are printed newest first: a completed event explicitly
+  reports that its file is missing (moved or removed), rather than making the completed
+  download invisible; canceled and last-observed in-progress events retain their
+  respective states. With neither files nor tracked events, the command says the state
+  is unknown and notes that downloads not triggered with `click -WaitDownload` are not
+  recorded.
 
 ## Browser prompt policy
 

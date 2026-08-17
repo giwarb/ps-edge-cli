@@ -43,6 +43,12 @@ are listed as P2 with honest notes on difficulty.
 - **Old-headless quirk**: `--headless` on very old Edge versions behaves differently;
   v1 targets current Edge only.
 
+## Future candidates
+
+| Feature | Why | Sketch |
+|---|---|---|
+| **Reconcile downloads with browser history** (issue #6 proposal 3) | The JSONL event log only covers downloads observed by `click -WaitDownload`; downloads initiated without an event subscription remain unknown. | Read Edge's own download history, such as `edge://downloads-hub/` or Chromium download-history data, and merge it with directory files and tracked events. |
+
 ## Maintenance rule
 
 Every feature PR must update, in the same PR: `docs/DESIGN.md` (command table),

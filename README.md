@@ -46,7 +46,7 @@ Stopped.
 | `start` | `start [-Port 9222] [-Headless] [-NoQuietFlags] [-ExtraArg <arg>] [-Url <url>] [-UserDataDir <path>] [-DownloadDir <path>] [-OktaFastPassOrigin <https-origin>]` / `start -Attach [-Port 9222]` | Edge を remote debugging port 付きで起動し、状態を保存します。通常は welcome、crash restore、permission prompt を表示しません。`-OktaFastPassOrigin` は exact HTTPS origin に限り、isolated profile 内で Okta protocol と local/loopback network を許可します。registry は変更しません。`-Attach` は既存の CDP endpoint に接続します。 |
 | `stop` | `stop` | CDP の `Browser.close` を試し、必要なら PID を停止し、状態を消します。 |
 | `status` | `status` | port、pid、version、tabs を表示します。未起動なら `Not running.` を表示します。 |
-| `downloads` | `downloads [-Dir <path>]` | 設定済み、または指定した download dir のファイルを新しい順に表示します。 |
+| `downloads` | `downloads [-Dir <path>]` | 設定済み、または指定した download dir のファイルを新しい順に表示し、`click -WaitDownload` の event log を統合して、移動・削除済みの完了 download、cancel、最後に観測した進行中 download も報告します。 |
 | `goto` | `goto <url>` | ページへ移動して load を待ちます。裸のドメインは `https://` として扱います。 |
 | `back` / `forward` | `back` / `forward` | ブラウザ履歴を戻る、進む。 |
 | `reload` | `reload` | 現在ページを再読み込みして load を待ちます。 |
