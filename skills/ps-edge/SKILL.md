@@ -168,16 +168,25 @@ fast; `Error: batch step 1 (select): ...` means later steps were not run.
   of failure: only `click -WaitDownload` records events, so an untracked download may
   still have occurred. Verify the business result before retrying a non-idempotent
   action. `-AcceptDialog` accepts dialogs for this click only and does not change the
-  persisted dialog policy.
+  persisted dialog policy. Dialogs answered by the download watch are printed after
+  its result as `# dialog: [alert|confirm|prompt] MESSAGE -> accepted|dismissed` (or
+  `-> accepted text: REPLY` for a prompt), so inspect these lines before deciding what
+  the download result means.
 - Uploads need a real file path on disk: run `upload e3 C:\path\file.pdf` only after
   `snapshot` shows the file input ref.
 - Dialogs opened during a command are handled by the injected JS hook or CDP safety
   net, including cross-origin iframe (OOPIF) dialogs; `beforeunload` is always
-  accepted, and auto-handled native dialogs appear as `# dialog: ...` footer lines.
+  accepted, and auto-handled native dialogs appear as exact
+  `# dialog: [type] MESSAGE -> accepted`, `-> dismissed`, or
+  `-> accepted text: REPLY` lines. `dialog -Accept` and `dialog -Dismiss` print any
+  dialog handled while their session connects immediately after the `Dialog policy:`
+  line.
   If a command fails with the `Page.enable` timeout
   hint, run `dialog -Rescue` against the visible browser. Rescue is a headful-only
-  concern because headless Edge auto-dismisses unattended dialogs. The persisted
-  policy remains configurable with `dialog -Accept` / `dialog -Dismiss`.
+  concern because headless Edge auto-dismisses unattended dialogs. Rescue always
+  keeps `Rescued native dialog: clicked 'NAME'`; when UI Automation finds message
+  text it adds `# dialog: [native] MESSAGE -> accepted|dismissed`. The persisted policy
+  remains configurable with `dialog -Accept` / `dialog -Dismiss`.
 
 ## Maintenance rule (for developers of ps-edge-cli)
 

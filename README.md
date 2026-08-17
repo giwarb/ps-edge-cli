@@ -55,7 +55,7 @@ Stopped.
 | `screenshot` | `screenshot [<path>] [-FullPage]` | PNG スクリーンショットを保存します。path 省略時は CWD に `screenshot-<timestamp>.png`。 |
 | `pdf` | `pdf [<path>]` | 現在のページを PDF として保存します。path 省略時は CWD に `page-<timestamp>.pdf`。headless Edge が必要です。 |
 | `resize` | `resize <width> <height>` | 現在のページの viewport を正の整数サイズに設定します。 |
-| `click` | `click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]` | ref の要素をクリックします。`-WaitDownload` は click 前から CDP download event を監視し、completed だけを成功とします。`-AcceptDialog` はこの呼び出し中だけ dialog を accept します。 |
+| `click` | `click <ref> [-Right] [-Double] [-WaitDownload] [-AcceptDialog] [-DownloadTimeoutSec 300]` | ref の要素をクリックします。`-WaitDownload` は click 前から CDP download event を監視し、completed だけを成功とします。watch 接続が自動応答した dialog も `# dialog: [type] message -> action` として表示します。`-AcceptDialog` はこの呼び出し中だけ dialog を accept します。 |
 | `type` | `type <ref> <text> [-Submit]` | 要素へフォーカスしてテキストを挿入します。`-Submit` は Enter も送ります。 |
 | `fill` | `fill <ref> <value>` | JS で `.value` を設定し、`input` と `change` を発火します。 |
 | `press` | `press <key>` | キーイベントを送ります。例: `Enter`, `Tab`, `Escape`, `Control+A`。 |
@@ -67,7 +67,7 @@ Stopped.
 | `wait` | `wait [-Time <sec>] [-Text <str>] [-Gone <str>] [-Selector <css>] [-SelectorGone <css>] [-TimeoutSec 30]` | 時間待ち、body text の出現/消滅、または CSS selector の出現/消滅をポーリングします。指定した条件はすべて満たす必要があります。 |
 | `tabs` | `tabs` / `tabs new [url]` / `tabs select <n>` / `tabs close [<n>]` | タブ一覧、新規作成、選択、終了。`select` は状態の `targetId` を更新します。 |
 | `console` | `console` | ページ内で捕捉した console log を表示します。best effort です。 |
-| `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` / `dialog -Rescue [-Accept [-Text <reply>] \| -Dismiss]` | JS hook + CDP safety net による dialog 自動応答 policy を表示・設定します。Cross-origin iframe (OOPIF) の dialog にも対応します。接続していない間に開いた visible Edge の native dialog は、Windows UI Automation を使う `-Rescue` で閉じられます。`beforeunload` は navigation 続行のため常に accept されます。 |
+| `dialog` | `dialog` / `dialog -Accept [-Text <reply>]` / `dialog -Dismiss` / `dialog -Rescue [-Accept [-Text <reply>] \| -Dismiss]` | JS hook + CDP safety net による dialog 自動応答 policy を表示・設定します。Cross-origin iframe (OOPIF) の dialog にも対応します。`-Accept` / `-Dismiss` 中に処理した dialog は `# dialog: [type] message -> action` として表示します。接続していない間に開いた visible Edge の native dialog は Windows UI Automation を使う `-Rescue` で閉じられ、message を取得できた場合は `[native]` の `# dialog:` 行も表示します。`beforeunload` は navigation 続行のため常に accept されます。 |
 | `cdp` | `cdp <method> [<params-json>]` | 生の CDP 呼び出しです。例: `cdp Page.navigate '{"url":"https://example.com"}'`。 |
 | `help` | `help` | usage を表示します。不明な command でも stderr に usage を表示します。 |
 

@@ -1687,6 +1687,26 @@ function Get-PseLocation {
     return ($json | ConvertFrom-Json)
 }
 
+function Write-PseHandledDialogs {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Conn
+    )
+
+    if ($Conn.HandledDialogs.Count -gt 0) {
+        foreach ($dialog in $Conn.HandledDialogs) {
+            if (-not $dialog.accept) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
+            } elseif ($null -ne $dialog.promptText) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
+            } else {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
+            }
+        }
+        [void]$Conn.HandledDialogs.Clear()
+    }
+}
+
 function Write-PseLocation {
     param(
         [Parameter(Mandatory = $true)]
@@ -1696,18 +1716,7 @@ function Write-PseLocation {
     $location = Get-PseLocation -Session $Session
     Write-Output "# url: $($location.url)"
     Write-Output "# title: $($location.title)"
-    if ($Session.Conn.HandledDialogs.Count -gt 0) {
-        foreach ($dialog in $Session.Conn.HandledDialogs) {
-            if (-not $dialog.accept) {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
-            } elseif ($null -ne $dialog.promptText) {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
-            } else {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
-            }
-        }
-        $Session.Conn.HandledDialogs.Clear()
-    }
+    Write-PseHandledDialogs -Conn $Session.Conn
 }
 
 # Source: src/55-uia.ps1
@@ -1927,12 +1936,46 @@ function Invoke-PseNativeDialogRescue {
         }
     }
 
+    $message = $null
+    try {
+        $window = Get-PseUiaContainingWindow -Element $button
+        if ($null -ne $window) {
+            $textCondition = New-Object -TypeName System.Windows.Automation.PropertyCondition -ArgumentList @(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Text
+            )
+            $textElements = $window.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $textCondition
+            )
+            $textNames = New-Object System.Collections.ArrayList
+            foreach ($textElement in $textElements) {
+                $textName = [string]$textElement.Current.Name
+                if (-not [string]::IsNullOrWhiteSpace($textName)) {
+                    [void]$textNames.Add($textName)
+                }
+            }
+            if ($textNames.Count -gt 0) {
+                $message = [string]::Join(' ', @($textNames | ForEach-Object { [string]$_ })).Trim()
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    $message = $null
+                }
+            }
+        }
+    } catch {
+        $message = $null
+    }
+
     $clickedName = [string]$button.Current.Name
     $invokePattern = $button.GetCurrentPattern(
         [System.Windows.Automation.InvokePattern]::Pattern
     )
-    $invokePattern.Invoke()
-    return "clicked '$clickedName'"
+    [void]$invokePattern.Invoke()
+    return [pscustomobject]@{
+        ClickedName = $clickedName
+        Accepted = [string]::Equals($clickedName, 'OK', [System.StringComparison]::OrdinalIgnoreCase)
+        Message = $message
+    }
 }
 
 # Source: src/60-snapshot.ps1
@@ -4043,6 +4086,7 @@ function Invoke-PseCmdClick {
             $downloadResult = Wait-PseDownloadWatch -Watch $watch -TimeoutSec $downloadTimeoutSec
             Write-PseDownloadEventLog -Port $watch.Port -Downloads $downloadResult.Downloads
             Write-PseDownloadWaitResult -Result $downloadResult -Watch $watch -TimeoutSec $downloadTimeoutSec
+            Write-PseHandledDialogs -Conn $watch.Conn
             if ($downloadResult.State -ne 'completed') {
                 return 1
             }
@@ -4283,6 +4327,22 @@ function Invoke-PseCmdWait {
     }
 }
 
+function Write-PseNativeDialogRescueResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result
+    )
+
+    Write-Output "Rescued native dialog: clicked '$($Result.ClickedName)'"
+    if (-not [string]::IsNullOrWhiteSpace([string]$Result.Message)) {
+        if ($Result.Accepted) {
+            Write-Output "# dialog: [native] $($Result.Message) -> accepted"
+        } else {
+            Write-Output "# dialog: [native] $($Result.Message) -> dismissed"
+        }
+    }
+}
+
 function Invoke-PseCmdDialog {
     param(
         [Parameter(Mandatory = $true)]
@@ -4313,7 +4373,7 @@ function Invoke-PseCmdDialog {
 
         try {
             $result = Invoke-PseNativeDialogRescue -State $stateForRescue -Accept $rescueAccept -Text $rescueText
-            Write-Output "Rescued native dialog: $result"
+            Write-PseNativeDialogRescueResult -Result $result
             return 0
         } catch {
             Write-PseCliError "Error: $($_.Exception.Message)"
@@ -4347,6 +4407,7 @@ function Invoke-PseCmdDialog {
         try {
             $session = Get-PseSession
             Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
+            Write-PseHandledDialogs -Conn $session.Conn
             return 0
         } finally {
             Close-PseSession -Session $session

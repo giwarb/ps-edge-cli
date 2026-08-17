@@ -378,6 +378,26 @@ function Get-PseLocation {
     return ($json | ConvertFrom-Json)
 }
 
+function Write-PseHandledDialogs {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Conn
+    )
+
+    if ($Conn.HandledDialogs.Count -gt 0) {
+        foreach ($dialog in $Conn.HandledDialogs) {
+            if (-not $dialog.accept) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
+            } elseif ($null -ne $dialog.promptText) {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
+            } else {
+                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
+            }
+        }
+        [void]$Conn.HandledDialogs.Clear()
+    }
+}
+
 function Write-PseLocation {
     param(
         [Parameter(Mandatory = $true)]
@@ -387,16 +407,5 @@ function Write-PseLocation {
     $location = Get-PseLocation -Session $Session
     Write-Output "# url: $($location.url)"
     Write-Output "# title: $($location.title)"
-    if ($Session.Conn.HandledDialogs.Count -gt 0) {
-        foreach ($dialog in $Session.Conn.HandledDialogs) {
-            if (-not $dialog.accept) {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> dismissed"
-            } elseif ($null -ne $dialog.promptText) {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted text: $($dialog.promptText)"
-            } else {
-                Write-Output "# dialog: [$($dialog.type)] $($dialog.message) -> accepted"
-            }
-        }
-        $Session.Conn.HandledDialogs.Clear()
-    }
+    Write-PseHandledDialogs -Conn $Session.Conn
 }

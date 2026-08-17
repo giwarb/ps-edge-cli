@@ -214,10 +214,44 @@ function Invoke-PseNativeDialogRescue {
         }
     }
 
+    $message = $null
+    try {
+        $window = Get-PseUiaContainingWindow -Element $button
+        if ($null -ne $window) {
+            $textCondition = New-Object -TypeName System.Windows.Automation.PropertyCondition -ArgumentList @(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Text
+            )
+            $textElements = $window.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $textCondition
+            )
+            $textNames = New-Object System.Collections.ArrayList
+            foreach ($textElement in $textElements) {
+                $textName = [string]$textElement.Current.Name
+                if (-not [string]::IsNullOrWhiteSpace($textName)) {
+                    [void]$textNames.Add($textName)
+                }
+            }
+            if ($textNames.Count -gt 0) {
+                $message = [string]::Join(' ', @($textNames | ForEach-Object { [string]$_ })).Trim()
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    $message = $null
+                }
+            }
+        }
+    } catch {
+        $message = $null
+    }
+
     $clickedName = [string]$button.Current.Name
     $invokePattern = $button.GetCurrentPattern(
         [System.Windows.Automation.InvokePattern]::Pattern
     )
-    $invokePattern.Invoke()
-    return "clicked '$clickedName'"
+    [void]$invokePattern.Invoke()
+    return [pscustomobject]@{
+        ClickedName = $clickedName
+        Accepted = [string]::Equals($clickedName, 'OK', [System.StringComparison]::OrdinalIgnoreCase)
+        Message = $message
+    }
 }

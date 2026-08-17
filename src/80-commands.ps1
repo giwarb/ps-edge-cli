@@ -908,6 +908,7 @@ function Invoke-PseCmdClick {
             $downloadResult = Wait-PseDownloadWatch -Watch $watch -TimeoutSec $downloadTimeoutSec
             Write-PseDownloadEventLog -Port $watch.Port -Downloads $downloadResult.Downloads
             Write-PseDownloadWaitResult -Result $downloadResult -Watch $watch -TimeoutSec $downloadTimeoutSec
+            Write-PseHandledDialogs -Conn $watch.Conn
             if ($downloadResult.State -ne 'completed') {
                 return 1
             }
@@ -1148,6 +1149,22 @@ function Invoke-PseCmdWait {
     }
 }
 
+function Write-PseNativeDialogRescueResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result
+    )
+
+    Write-Output "Rescued native dialog: clicked '$($Result.ClickedName)'"
+    if (-not [string]::IsNullOrWhiteSpace([string]$Result.Message)) {
+        if ($Result.Accepted) {
+            Write-Output "# dialog: [native] $($Result.Message) -> accepted"
+        } else {
+            Write-Output "# dialog: [native] $($Result.Message) -> dismissed"
+        }
+    }
+}
+
 function Invoke-PseCmdDialog {
     param(
         [Parameter(Mandatory = $true)]
@@ -1178,7 +1195,7 @@ function Invoke-PseCmdDialog {
 
         try {
             $result = Invoke-PseNativeDialogRescue -State $stateForRescue -Accept $rescueAccept -Text $rescueText
-            Write-Output "Rescued native dialog: $result"
+            Write-PseNativeDialogRescueResult -Result $result
             return 0
         } catch {
             Write-PseCliError "Error: $($_.Exception.Message)"
@@ -1212,6 +1229,7 @@ function Invoke-PseCmdDialog {
         try {
             $session = Get-PseSession
             Write-Output ("Dialog policy: " + ((Format-PseDialogPolicy -Policy $policy) -replace '^policy: ', ''))
+            Write-PseHandledDialogs -Conn $session.Conn
             return 0
         } finally {
             Close-PseSession -Session $session
